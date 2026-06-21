@@ -75,6 +75,7 @@
   let attackerSourceResults = {};
 
   const ATTACKERS_GROUP_ID = "system_attackers";
+  const ATTACK_ALL_OWN = "__all_own__";
   const DEBUG_ATTACK_PARSER = true;
 
   const ATTACK_RISK_COLORS = {
@@ -511,105 +512,141 @@
     return base + "overview_villages" + (mode ? "&mode=" + mode : "");
   }
 
-  function rowHasIncomingAttackIndicator(rowHtml) {
-    const html = String(rowHtml || "").toLowerCase();
-
-    if (/assistente de saque|commands_outgoing|mode=outgoing|\bsaindo\b/.test(html)) {
-      return false;
-    }
-
-    return (
-      /graphic\/command\/(attack|support)|commands_incoming|#commands_incoming|chegando|incoming/.test(html) ||
-      (/command\/attack/.test(html) && !/command\/return/.test(html))
-    );
-  }
-
-  function parseIncomingOverviewTargets(html) {
+  function parseOwnVillagesFromOverview(html) {
     const doc = document.createElement("div");
 
     doc.innerHTML = html;
 
-    const table = doc.querySelector("#incomings_table");
+    const items = [];
+    const seen = {};
 
-    if (!table) {
-      return { found: false, villages: [] };
+    doc.querySelectorAll("a[href*='village='], a[href*='info_village']").forEach(function (link) {
+      const id = extractVillageIdFromHref(link.getAttribute("href"));
+
+      if (!id || !isOwnVillageId(id) || seen[id]) {
+        return;
+      }
+
+      seen[id] = 1;
+
+      const row = link.closest("tr");
+      const rowText = row ? (row.innerText || row.textContent || "") : (link.textContent || "");
+      const coordMatch = rowText.match(/(\d{3})\s*\|\s*(\d{3})/);
+
+      items.push({
+        villageId: id,
+        coord: coordMatch ? coordMatch[1] + "|" + coordMatch[2] : null,
+        name: (link.textContent || "").trim()
+      });
+    });
+
+    return items;
+  }
+
+  function parseOwnVillagesFromDomDropdown() {
+    const items = [];
+    const seen = {};
+
+    document.querySelectorAll(
+      "#village_select option, #village_list option, select[name='village'] option, .village-selector option"
+    ).forEach(function (opt) {
+      const id = String(opt.value || "").trim();
+
+      if (!id || !/^\d+$/.test(id) || !isOwnVillageId(id) || seen[id]) {
+        return;
+      }
+
+      seen[id] = 1;
+
+      const text = opt.textContent || "";
+      const coordMatch = text.match(/(\d{3})\s*\|\s*(\d{3})/);
+
+      items.push({
+        villageId: id,
+        coord: coordMatch ? coordMatch[1] + "|" + coordMatch[2] : null,
+        name: text.trim()
+      });
+    });
+
+    return items;
+  }
+
+  function findVillageIdByCoord(coord) {
+    if (!coord) {
+      return null;
     }
 
-    const targetIds = {};
+    const mapVillage = w.TWMap.villages[keyOf(coord)];
 
-    table.querySelectorAll("tr").forEach(function (row) {
-      if (row.querySelector("th")) {
+    if (mapVillage && mapVillage.id) {
+      return String(mapVillage.id);
+    }
+
+    const gdVillages = w.game_data && w.game_data.villages;
+
+    if (!gdVillages || typeof gdVillages !== "object") {
+      return null;
+    }
+
+    let foundId = null;
+
+    Object.keys(gdVillages).forEach(function (key) {
+      if (foundId) {
         return;
       }
 
-      const rowText = (row.innerText || row.textContent || "").trim();
+      const gdV = gdVillages[key];
+      const gdCoord = coordFromGameVillage(gdV);
 
-      if (!rowText || rowText.length < 4) {
-        return;
+      if (gdCoord && keyOf(gdCoord) === keyOf(coord)) {
+        foundId = String((gdV && gdV.id) || key);
       }
-
-      row.querySelectorAll("a[href*='info_village'], a[href*='village=']").forEach(function (link) {
-        const id = extractVillageIdFromHref(link.getAttribute("href"));
-
-        if (id && isOwnVillageId(id)) {
-          targetIds[id] = 1;
-        }
-      });
     });
 
-    const villages = Object.keys(targetIds).map(function (id) {
-      return resolveOwnVillageEntry(id);
-    }).filter(Boolean);
-
-    return { found: true, villages: villages };
+    return foundId;
   }
 
-  function parseOwnVillagesWithAttackIndicatorFromOverview(html) {
-    const doc = document.createElement("div");
+  async function getAllOwnVillagesForAttackMapping() {
+    const seen = {};
+    const result = [];
 
-    doc.innerHTML = html;
+    function pushItem(villageId, coord, name) {
+      const id = String(villageId);
 
-    const targetIds = {};
-
-    doc.querySelectorAll("tr").forEach(function (row) {
-      if (row.querySelector("th")) {
+      if (!id || seen[id]) {
         return;
       }
 
-      if (!rowHasIncomingAttackIndicator(row.innerHTML || "")) {
-        return;
-      }
-
-      row.querySelectorAll("a[href*='info_village'], a[href*='village=']").forEach(function (link) {
-        const id = extractVillageIdFromHref(link.getAttribute("href"));
-
-        if (id && isOwnVillageId(id)) {
-          targetIds[id] = 1;
-        }
+      seen[id] = 1;
+      result.push({
+        villageId: id,
+        coord: coord || null,
+        name: name || ""
       });
-    });
+    }
 
-    return Object.keys(targetIds).map(function (id) {
-      return resolveOwnVillageEntry(id);
-    }).filter(Boolean);
-  }
+    const gdVillages = w.game_data && w.game_data.villages;
 
-  async function discoverOwnVillagesUnderAttack() {
-    try {
-      const html = await fetchGameUrl(buildOverviewVillagesUrl("incomings"));
-      const parsed = parseIncomingOverviewTargets(html);
+    if (gdVillages && typeof gdVillages === "object") {
+      if (Array.isArray(gdVillages)) {
+        gdVillages.forEach(function (gdV) {
+          if (!gdV) {
+            return;
+          }
 
-      if (parsed.found) {
-        return {
-          found: true,
-          villages: parsed.villages,
-          source: "overview_incomings"
-        };
+          pushItem(gdV.id || gdV.village_id, coordFromGameVillage(gdV), gdV.name);
+        });
+      } else {
+        Object.keys(gdVillages).forEach(function (key) {
+          const gdV = gdVillages[key];
+
+          pushItem((gdV && gdV.id) || key, coordFromGameVillage(gdV), gdV && gdV.name);
+        });
       }
-    } catch (err) {
-      if (DEBUG_ATTACK_PARSER) {
-        console.log("[AttackDiscover] overview incomings falhou", err);
-      }
+    }
+
+    if (result.length) {
+      return result;
     }
 
     const overviewModes = ["combined", "prod", "production"];
@@ -617,14 +654,14 @@
     for (let i = 0; i < overviewModes.length; i++) {
       try {
         const html = await fetchGameUrl(buildOverviewVillagesUrl(overviewModes[i]));
-        const villages = parseOwnVillagesWithAttackIndicatorFromOverview(html);
+        const fromOverview = parseOwnVillagesFromOverview(html);
 
-        if (villages.length) {
-          return {
-            found: true,
-            villages: villages,
-            source: "overview_" + overviewModes[i]
-          };
+        fromOverview.forEach(function (item) {
+          pushItem(item.villageId, item.coord, item.name);
+        });
+
+        if (result.length) {
+          return result;
         }
       } catch (err) {
         if (DEBUG_ATTACK_PARSER) {
@@ -633,11 +670,11 @@
       }
     }
 
-    return {
-      found: false,
-      villages: getOwnVillagesFromGameData(),
-      source: "game_data_all"
-    };
+    parseOwnVillagesFromDomDropdown().forEach(function (item) {
+      pushItem(item.villageId, item.coord, item.name);
+    });
+
+    return result;
   }
 
   function extractTargetCoordFromInfoVillageHtml(html) {
@@ -950,7 +987,11 @@
       return false;
     }
 
-    if (!rowHasCommandGraphic(rowHtml)) {
+    const hay = rowText.toLowerCase() + " " + rowHtml;
+    const looksLikeCommand =
+      /explorador|ataque|origin|chegada|snob|spy|unit_|command|graphic\/command|graphic\/unit/.test(hay);
+
+    if (!rowHasCommandGraphic(rowHtml) && !looksLikeCommand) {
       return false;
     }
 
@@ -1238,6 +1279,109 @@
     return null;
   }
 
+  function findIncomingCommandRows(doc) {
+    const rows = [];
+    const seen = new WeakSet();
+
+    function addRow(tr) {
+      if (!tr || seen.has(tr)) {
+        return;
+      }
+
+      seen.add(tr);
+      rows.push(tr);
+    }
+
+    if (!doc) {
+      return rows;
+    }
+
+    Array.from(doc.querySelectorAll("table")).forEach(function (table) {
+      const text = table.innerText || "";
+      const caption = table.querySelector("caption");
+      const captionText = caption ? caption.textContent || "" : "";
+      const prevText = table.previousElementSibling ? table.previousElementSibling.textContent || "" : "";
+      const headerNearby = prevText + " " + captionText + " " + text.slice(0, 120);
+
+      const isChegandoTable =
+        /Chegando\s*\(\d+\)/i.test(text) ||
+        /^Chegando/i.test(text.trim()) ||
+        /Chegando\s*\(\d+\)/i.test(headerNearby) ||
+        table.id === "commands_incoming_table";
+
+      if (!isChegandoTable) {
+        return;
+      }
+
+      Array.from(table.querySelectorAll("tr")).forEach(function (tr) {
+        if (tr.querySelector("th")) {
+          return;
+        }
+
+        const rowText = (tr.innerText || tr.textContent || "").trim();
+
+        if (!rowText) {
+          return;
+        }
+
+        if (/^Chegando/i.test(rowText)) {
+          return;
+        }
+
+        if (/^Chegada em/i.test(rowText)) {
+          return;
+        }
+
+        const rowHtml = (tr.innerHTML || "").toLowerCase();
+        const hay = rowText + " " + rowHtml;
+
+        const looksLikeCommand =
+          /explorador|ataque|origin|return|chegada|snob|nobre|spy|unit_|command|graphic\/command|graphic\/unit/.test(hay);
+
+        if (looksLikeCommand || rowHasCommandGraphic(rowHtml)) {
+          addRow(tr);
+        }
+      });
+    });
+
+    if (!rows.length) {
+      doc.querySelectorAll("h2, h3, h4, caption, th").forEach(function (el) {
+        if (!isIncomingChegandoLabel((el.textContent || "").trim())) {
+          return;
+        }
+
+        let table = el.closest("table");
+
+        if (!table && /^H[234]$/i.test(el.tagName)) {
+          let sibling = el.nextElementSibling;
+
+          while (sibling && !table) {
+            if (sibling.tagName === "TABLE") {
+              table = sibling;
+              break;
+            }
+
+            sibling = sibling.nextElementSibling;
+          }
+        }
+
+        if (table) {
+          getIncomingCommandRows(table).forEach(addRow);
+        }
+      });
+    }
+
+    if (!rows.length) {
+      const fallbackTable = doc.querySelector("#commands_incoming_table");
+
+      if (fallbackTable) {
+        getIncomingCommandRows(fallbackTable).forEach(addRow);
+      }
+    }
+
+    return rows;
+  }
+
   function findIncomingAttacksTable(doc) {
     let targetTable = null;
     const headerElements = doc.querySelectorAll("h2, h3, h4, caption, th");
@@ -1310,13 +1454,20 @@
 
     doc.innerHTML = html;
 
-    const table = findIncomingAttacksTable(doc);
+    let rows = findIncomingCommandRows(doc);
+
+    if (!rows.length) {
+      const table = findIncomingAttacksTable(doc);
+
+      rows = getIncomingCommandRows(table);
+    }
+
     const result = {
       counts: emptyAttackCounts(),
       sources: []
     };
 
-    if (!table) {
+    if (!rows.length) {
       if (DEBUG_ATTACK_PARSER && targetCoord) {
         console.log("[AttackParser]", targetCoord, {
           incomingRows: 0,
@@ -1329,7 +1480,6 @@
       return emptyResult;
     }
 
-    const rows = getIncomingCommandRows(table);
     let ignoredRows = 0;
 
     rows.forEach(function (row) {
@@ -1375,6 +1525,56 @@
     }
 
     return result;
+  }
+
+  async function getVillageAttackDataByVillageRef(item) {
+    const villageId = String(item.villageId || item.id || "");
+
+    if (!villageId) {
+      return null;
+    }
+
+    const response = await fetchGameUrl(buildInfoVillageUrl(villageId));
+    let coord = item.coord || extractTargetCoordFromInfoVillageHtml(response);
+    const parsed = parseIncomingAttacksFromHtml(response, coord);
+    const raw = parsed.counts;
+
+    if (!coord) {
+      const nameMatch = String(item.name || "").match(/(\d{3})\s*\|\s*(\d{3})/);
+
+      if (nameMatch) {
+        coord = nameMatch[1] + "|" + nameMatch[2];
+      }
+    }
+
+    if (DEBUG_ATTACK_PARSER) {
+      const debugDoc = document.createElement("div");
+
+      debugDoc.innerHTML = response;
+
+      console.log("[AttackParserVillage]", item, {
+        coord: coord,
+        rows: findIncomingCommandRows(debugDoc).length,
+        attackData: raw
+      });
+    }
+
+    if (!coord) {
+      return Object.assign(buildAttackResult("000|000", raw), {
+        coord: null,
+        total: raw.total
+      });
+    }
+
+    if (raw.total > 0) {
+      processIncomingAttackSources(coord, parsed);
+    }
+
+    const data = buildAttackResult(coord, raw);
+
+    data.coord = coord;
+
+    return data;
   }
 
   function getVillageIncomingAttacks(village, targetCoord) {
@@ -1491,6 +1691,8 @@
     document.querySelectorAll(".twm_attacker_source_mark").forEach(function (el) {
       el.remove();
     });
+
+    refreshAttackTargetSelect();
   }
 
   function processIncomingAttackSources(targetCoord, parsed) {
@@ -1897,6 +2099,7 @@
     attackResults = {};
     clearAttackerSourceResults();
     clearAttackOverlays();
+    refreshAttackTargetSelect();
     draw();
     setAttackStatus("Ataques limpos.");
   }
@@ -1924,7 +2127,7 @@
 
   function updateAttackButtons() {
     const cancelBtn = document.getElementById("twm_cancel_attack");
-    const mapBtn = document.getElementById("twm_map_incoming_attacks");
+    const mapBtn = document.getElementById("twm_map_attacks");
 
     if (cancelBtn) {
       cancelBtn.disabled = !attackMappingInProgress;
@@ -1932,6 +2135,42 @@
 
     if (mapBtn) {
       mapBtn.disabled = attackMappingInProgress;
+    }
+  }
+
+  function refreshAttackTargetSelect() {
+    const select = document.getElementById("twm_attack_target_select");
+
+    if (!select) {
+      return;
+    }
+
+    const currentValue = select.value;
+
+    select.innerHTML = "";
+
+    const allOpt = document.createElement("option");
+
+    allOpt.value = ATTACK_ALL_OWN;
+    allOpt.textContent = "Todas as aldeias próprias";
+    select.appendChild(allOpt);
+
+    Object.values(groups).forEach(function (group) {
+      if (group.systemType === "attackers") {
+        return;
+      }
+
+      const opt = document.createElement("option");
+
+      opt.value = group.id;
+      opt.textContent = group.name + " (" + Object.keys(group.coords || {}).length + ")";
+      select.appendChild(opt);
+    });
+
+    if (currentValue && (currentValue === ATTACK_ALL_OWN || groups[currentValue])) {
+      select.value = currentValue;
+    } else {
+      select.value = ATTACK_ALL_OWN;
     }
   }
 
@@ -2031,9 +2270,35 @@
     });
   }
 
-  async function mapAllOwnIncomingAttacks() {
+  async function mapAttacksForSelectedTarget() {
     if (attackMappingInProgress) {
       setAttackStatus("Mapeamento de ataques já em andamento.", true);
+      return;
+    }
+
+    const select = document.getElementById("twm_attack_target_select");
+    const value = select ? select.value : ATTACK_ALL_OWN;
+
+    if (value === ATTACK_ALL_OWN) {
+      await mapAttacksForAllOwnVillages();
+      return;
+    }
+
+    const group = groups[value];
+
+    if (!group || group.systemType === "attackers") {
+      setAttackStatus("Selecione um grupo ou Todas as aldeias próprias.", true);
+      return;
+    }
+
+    await mapAttacksForGroup(group);
+  }
+
+  async function mapAttacksForAllOwnVillages() {
+    const ownVillages = await getAllOwnVillagesForAttackMapping();
+
+    if (!ownVillages.length) {
+      setAttackStatus("Nenhuma aldeia própria encontrada para mapear.", true);
       return;
     }
 
@@ -2045,114 +2310,53 @@
     updateAttackButtons();
     w.__twm_attack_cancel = cancelAttackMapping;
 
-    let mapped = 0;
+    let withIncoming = 0;
     let failed = 0;
-    let skipped = 0;
-    let origins = 0;
 
-    setAttackStatus("Buscando aldeias próprias com ataques chegando...");
+    setAttackStatus("Mapeando ataques em todas as aldeias próprias...");
 
-    let discovery;
-
-    try {
-      discovery = await discoverOwnVillagesUnderAttack();
-    } catch (err) {
-      attackMappingInProgress = false;
-      w.__twm_attack_cancel = null;
-      updateAttackButtons();
-      setAttackStatus("Erro ao buscar aldeias atacadas.", true);
-      console.error("Erro ao descobrir aldeias atacadas:", err);
-      return;
-    }
-
-    if (attackMappingCancelled) {
-      attackMappingInProgress = false;
-      w.__twm_attack_cancel = null;
-      updateAttackButtons();
-      setAttackStatus("Mapeamento de ataques cancelado.");
-      return;
-    }
-
-    const targets = discovery.villages || [];
-    const probeAll = !discovery.found;
-
-    if (!targets.length && discovery.found) {
-      attackMappingInProgress = false;
-      w.__twm_attack_cancel = null;
-      updateAttackButtons();
-      updateAttackInfo();
-      refreshAllPanels();
-      draw();
-      setAttackStatus("Nenhuma aldeia própria com ataques chegando.");
-      return;
-    }
-
-    if (!targets.length) {
-      attackMappingInProgress = false;
-      w.__twm_attack_cancel = null;
-      updateAttackButtons();
-      setAttackStatus("Nenhuma aldeia própria encontrada em game_data.", true);
-      return;
-    }
-
-    setAttackStatus(
-      "Mapeando ataques recebidos em " + targets.length +
-      " aldeia(s) (" + discovery.source + ")..."
-    );
-
-    for (let i = 0; i < targets.length; i++) {
+    for (let i = 0; i < ownVillages.length; i++) {
       if (attackMappingCancelled) {
         break;
       }
 
-      const entry = targets[i];
-      const village = entry.village;
-      let coord = entry.coord;
-
-      if (!village || !village.id) {
-        skipped++;
-        continue;
-      }
+      const item = ownVillages[i];
 
       try {
-        const parsed = await getVillageIncomingAttacks(village, coord);
+        const data = await getVillageAttackDataByVillageRef(item);
 
-        if (attackMappingCancelled) {
-          break;
-        }
-
-        if (!parsed) {
-          failed++;
+        if (!data || !data.coord) {
+          setAttackStatus(
+            "Mapeando " + (i + 1) + "/" + ownVillages.length + " | sem coordenada"
+          );
+          await sleep(250);
           continue;
         }
 
-        if (!coord && village.x != null && village.y != null) {
-          coord = padCoordPart(village.x) + "|" + padCoordPart(village.y);
-        }
+        if (!data.total) {
+          if (attackResults[data.coord]) {
+            delete attackResults[data.coord];
+          }
 
-        if (!coord) {
-          skipped++;
+          setAttackStatus(
+            "Mapeando " + (i + 1) + "/" + ownVillages.length + " | sem ataques"
+          );
+          await sleep(250);
           continue;
         }
 
-        const raw = parsed.counts;
-
-        if (probeAll && raw.total <= 0) {
-          continue;
-        }
-
-        processIncomingAttackSources(coord, parsed);
-
-        if (raw.total > 0) {
-          attackResults[coord] = buildAttackResult(coord, raw);
-          mapped++;
-        }
+        attackResults[data.coord] = data;
+        withIncoming++;
 
         draw();
 
         setAttackStatus(
-          "Mapeando ataques recebidos " + (i + 1) + "/" + targets.length +
-          " | OK: " + coord + " (" + raw.total + " ataque(s))"
+          "Mapeando " +
+          (i + 1) +
+          "/" +
+          ownVillages.length +
+          " | ataques em " +
+          data.coord
         );
 
         if (attackMappingCancelled) {
@@ -2162,11 +2366,11 @@
         await sleep(ATTACK_FETCH_DELAY);
       } catch (err) {
         failed++;
-        console.error("Erro ao mapear ataques recebidos:", coord || entry.id, err);
+        console.error("Erro ao mapear ataques da aldeia própria:", item, err);
       }
     }
 
-    origins = Object.keys(attackerSourceResults).length;
+    const origins = Object.keys(attackerSourceResults).length;
 
     attackMappingInProgress = false;
     w.__twm_attack_cancel = null;
@@ -2178,17 +2382,138 @@
 
     if (attackMappingCancelled) {
       setAttackStatus(
-        "Mapeamento cancelado. Aldeias: " + mapped +
-        " | Origens: " + origins +
-        " | Falhas: " + failed +
-        " | Ignoradas: " + skipped
+        "Mapeamento cancelado. Aldeias com ataques: " +
+        withIncoming +
+        " | Origens: " +
+        origins +
+        " | Falhas: " +
+        failed
+      );
+    } else if (withIncoming === 0) {
+      setAttackStatus("Nenhuma aldeia própria com ataques chegando.");
+    } else {
+      setAttackStatus(
+        "Mapeamento concluído. Aldeias com ataques: " +
+        withIncoming +
+        " | Origens: " +
+        origins +
+        " | Falhas: " +
+        failed
+      );
+    }
+  }
+
+  async function mapAttacksForGroup(group) {
+    if (!group || !group.coords) {
+      setAttackStatus("Grupo inválido para mapear ataques.", true);
+      return;
+    }
+
+    const coords = Object.keys(group.coords);
+
+    if (!coords.length) {
+      setAttackStatus("O grupo " + group.name + " não tem aldeias.", true);
+      return;
+    }
+
+    attackResults = {};
+    clearAttackerSourceResults();
+
+    attackMappingCancelled = false;
+    attackMappingInProgress = true;
+    updateAttackButtons();
+    w.__twm_attack_cancel = cancelAttackMapping;
+
+    let withIncoming = 0;
+    let failed = 0;
+    let skipped = 0;
+
+    setAttackStatus("Mapeando ataques do grupo " + group.name + "...");
+
+    for (let i = 0; i < coords.length; i++) {
+      if (attackMappingCancelled) {
+        break;
+      }
+
+      const coord = coords[i];
+      const villageId = findVillageIdByCoord(coord);
+
+      if (!villageId) {
+        skipped++;
+        setAttackStatus(
+          "Mapeando " + group.name + " " + (i + 1) + "/" + coords.length +
+          " | sem villageId: " + coord
+        );
+        continue;
+      }
+
+      try {
+        const data = await getVillageAttackDataByVillageRef({
+          villageId: villageId,
+          coord: coord
+        });
+
+        if (attackMappingCancelled) {
+          break;
+        }
+
+        if (!data || !data.coord) {
+          skipped++;
+          continue;
+        }
+
+        if (data.total > 0) {
+          attackResults[data.coord] = data;
+          withIncoming++;
+        } else if (attackResults[data.coord]) {
+          delete attackResults[data.coord];
+        }
+
+        draw();
+
+        setAttackStatus(
+          "Mapeando " + group.name + " " + (i + 1) + "/" + coords.length +
+          " | " + data.coord + " (" + data.total + " ataque(s))"
+        );
+
+        if (attackMappingCancelled) {
+          break;
+        }
+
+        await sleep(ATTACK_FETCH_DELAY);
+      } catch (err) {
+        failed++;
+        console.error("Erro ao mapear ataques do grupo:", coord, err);
+      }
+    }
+
+    const origins = Object.keys(attackerSourceResults).length;
+
+    attackMappingInProgress = false;
+    w.__twm_attack_cancel = null;
+    w.__twm_attack_mapping_timer = null;
+    updateAttackButtons();
+    updateAttackInfo();
+    refreshAllPanels();
+    draw();
+
+    if (attackMappingCancelled) {
+      setAttackStatus(
+        "Mapeamento cancelado. Aldeias com ataques: " +
+        withIncoming +
+        " | Origens: " +
+        origins +
+        " | Falhas: " +
+        failed
       );
     } else {
       setAttackStatus(
-        "Mapeamento concluído. Aldeias atacadas: " + mapped +
-        " | Origens: " + origins +
-        " | Falhas: " + failed +
-        " | Ignoradas: " + skipped
+        "Mapeamento concluído. Aldeias com ataques: " +
+        withIncoming +
+        " | Origens: " +
+        origins +
+        " | Falhas: " +
+        failed
       );
     }
   }
@@ -2920,7 +3245,10 @@
         "</div>" +
         '<div class="twm_section" style="margin-bottom:8px;">' +
           '<div class="twm_section_title" style="font-weight:bold;margin-bottom:4px;border-bottom:1px solid #7d510f;padding-bottom:2px;">Ataques</div>' +
-          '<button id="twm_map_incoming_attacks">Mapear ataques recebidos</button> ' +
+          '<label style="display:block;margin-bottom:4px;font-size:11px;">Mapear: ' +
+            '<select id="twm_attack_target_select" style="max-width:180px;margin-left:2px;"></select>' +
+          "</label>" +
+          '<button id="twm_map_attacks">Mapear ataques</button> ' +
           '<button id="twm_cancel_attack" disabled>Cancelar mapeamento</button> ' +
           '<button id="twm_clear_attack">Limpar ataques</button>' +
           '<div id="twm_attack_legend" style="margin-top:5px;font-size:11px;line-height:14px;color:#333;">' +
@@ -3009,8 +3337,8 @@
       cancelAttackMapping();
     };
 
-    document.getElementById("twm_map_incoming_attacks").onclick = function () {
-      mapAllOwnIncomingAttacks();
+    document.getElementById("twm_map_attacks").onclick = function () {
+      mapAttacksForSelectedTarget();
     };
 
     document.getElementById("twm_clear_attack").onclick = function () {
@@ -3018,6 +3346,7 @@
     };
 
     refreshDefenseGroupSelect();
+    refreshAttackTargetSelect();
 
     document.getElementById("twm_close_all").onclick = function () {
       if (w.__twm_defense_cancel) {
@@ -3348,6 +3677,7 @@
     updateDefenseButtons();
     updateAttackButtons();
     refreshDefenseGroupSelect();
+    refreshAttackTargetSelect();
   }
 
   w.__twm_click_listener = function (event) {
