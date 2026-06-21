@@ -32,6 +32,7 @@
 
   let clickMode = false;
   let activeGroupId = null;
+  let groupIndex = 0;
 
   const groups = {};
 
