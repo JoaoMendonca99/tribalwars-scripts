@@ -349,7 +349,7 @@
     container.appendChild(content);
   }
 
-  function markImg(img, coord, group, isActive) {
+  function markImg(img, coord, group) {
     if (!img || !img.parentElement) {
       return;
     }
@@ -377,9 +377,8 @@
       z = 5;
     }
 
-    const bgOpacity = isActive ? 0.42 : 0.2;
-    const borderSize = isActive ? 3 : 2;
-    const brightness = isActive ? "brightness(1)" : "brightness(0.55)";
+    const bgOpacity = 0.42;
+    const borderSize = 3;
 
     box.style.cssText =
       "position:absolute;" +
@@ -390,15 +389,14 @@
       "box-sizing:border-box;" +
       "border:" + borderSize + "px solid " + group.color + ";" +
       "background:" + alpha(group.color, bgOpacity) + ";" +
-      "box-shadow:0 0 " + (isActive ? "7px 3px " : "4px 1px ") + group.color + ";" +
+      "box-shadow:0 0 7px 3px " + group.color + ";" +
       "border-radius:3px;" +
       "z-index:" + (z + 50) + ";" +
       "pointer-events:none;" +
       "display:flex;" +
       "align-items:center;" +
       "justify-content:center;" +
-      "overflow:hidden;" +
-      "filter:" + brightness + ";";
+      "overflow:hidden;";
 
     populateMarkContent(box, group);
     parent.appendChild(box);
@@ -408,8 +406,6 @@
     clearMarks();
 
     Object.values(groups).forEach(function (group) {
-      const isActive = group.id === activeGroupId;
-
       Object.keys(group.coords || {}).forEach(function (coord) {
         const village = w.TWMap.villages[keyOf(coord)];
 
@@ -420,7 +416,7 @@
         const img = document.getElementById("map_village_" + village.id);
 
         if (img) {
-          markImg(img, coord, group, isActive);
+          markImg(img, coord, group);
         }
       });
     });
@@ -534,6 +530,21 @@
         "</button>"
       );
     }).join("");
+  }
+
+  function setGroupPanelEnabled(panel, enabled) {
+    const body = panel.querySelector(".twm_body");
+
+    if (!body) {
+      return;
+    }
+
+    body.querySelectorAll("input, textarea, button").forEach(function (el) {
+      el.disabled = !enabled;
+    });
+
+    body.style.opacity = enabled ? "1" : "0.55";
+    body.style.filter = enabled ? "brightness(1)" : "brightness(0.75)";
   }
 
   function refreshIconGrid(panel, group) {
@@ -763,19 +774,14 @@
     });
 
     activeCheckbox.addEventListener("change", function () {
-      saveGroupFields();
-
-      if (this.checked) {
-        setActiveGroup(group.id);
+      if (activeGroupId === group.id && !this.checked) {
+        this.checked = true;
         return;
       }
 
-      if (activeGroupId === group.id) {
-        activeGroupId = null;
-        clickMode = false;
-        updateClickButton();
-        refreshAllPanels();
-        draw();
+      if (this.checked) {
+        saveGroupFields();
+        setActiveGroup(group.id);
       }
     });
 
@@ -838,11 +844,12 @@
         if (!activeGroupId) {
           clickMode = false;
           updateClickButton();
-          setStatus("Nenhum grupo ativo.", true);
+          setStatus("Nenhum grupo selecionado.", true);
         }
       }
 
       draw();
+      refreshAllPanels();
     };
 
     refreshGroupPanel(group, { forceFields: true });
@@ -861,7 +868,6 @@
     const count = Object.keys(group.coords || {}).length;
     const title = panel.querySelector(".twm_title");
     const head = panel.querySelector(".twm_head");
-    const body = panel.querySelector(".twm_body");
     const coordsArea = panel.querySelector(".twm_coords");
     const noteArea = panel.querySelector(".twm_note");
     const activeCheckbox = panel.querySelector(".twm_active_checkbox");
@@ -873,7 +879,7 @@
     }
 
     panel.querySelector(".twm_info").textContent =
-      "Coords: " + count + (isActive ? " | ativo para clique" : " | inativo");
+      "Coords: " + count + (isActive ? " | selecionado" : " | bloqueado");
 
     if (options.forceFields || (coordsArea && document.activeElement !== coordsArea)) {
       coordsArea.value = coordsToText(group);
@@ -884,6 +890,7 @@
     }
 
     refreshIconGrid(panel, group);
+    setGroupPanelEnabled(panel, isActive);
 
     panel.style.opacity = "1";
     panel.style.filter = "none";
@@ -893,15 +900,7 @@
       head.style.filter = "none";
     }
 
-    if (isActive) {
-      panel.style.borderColor = group.color;
-      body.style.opacity = "1";
-      body.style.filter = "brightness(1)";
-    } else {
-      panel.style.borderColor = "#7d510f";
-      body.style.opacity = "0.55";
-      body.style.filter = "brightness(0.75)";
-    }
+    panel.style.borderColor = isActive ? group.color : "#7d510f";
   }
 
   function refreshAllPanels() {
