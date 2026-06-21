@@ -87,8 +87,6 @@
     critico: "#8a00ff"
   };
 
-  const ATTACK_ALL_VISIBLE = "__all_visible__";
-
   const ICON_PRESETS = [
     { label: "Sem ícone", value: "", src: "" },
     { label: "Lança", value: "spear", src: "/graphic/unit_map/spear.png" },
@@ -383,38 +381,6 @@
     }
 
     return isOwnVillage(village);
-  }
-
-  function getVisibleOwnVillagesForAttackMapping() {
-    const result = [];
-    const seen = {};
-
-    Array.from(document.querySelectorAll('img[id^="map_village_"]')).forEach(function (img) {
-      const villageId = img.id.replace("map_village_", "");
-      const coord = findCoordByVillageId(villageId);
-
-      if (!coord || seen[coord]) {
-        return;
-      }
-
-      const village = w.TWMap.villages[keyOf(coord)];
-
-      if (!village || !village.id) {
-        return;
-      }
-
-      if (!isOwnVillage(village)) {
-        return;
-      }
-
-      seen[coord] = 1;
-      result.push({
-        coord: coord,
-        village: village
-      });
-    });
-
-    return result;
   }
 
   function parseIntSafe(value) {
@@ -1690,13 +1656,18 @@
 
     select.innerHTML = "";
 
-    const allOpt = document.createElement("option");
+    const groupEntries = Object.values(groups).filter(function (group) {
+      return group.systemType !== "attackers";
+    });
 
-    allOpt.value = ATTACK_ALL_VISIBLE;
-    allOpt.textContent = "Todas as aldeias visíveis";
-    select.appendChild(allOpt);
+    if (!groupEntries.length) {
+      const opt = document.createElement("option");
 
-    const groupEntries = Object.values(groups);
+      opt.value = "";
+      opt.textContent = "Nenhum grupo";
+      select.appendChild(opt);
+      return;
+    }
 
     groupEntries.forEach(function (group) {
       const opt = document.createElement("option");
@@ -1706,14 +1677,10 @@
       select.appendChild(opt);
     });
 
-    if (currentValue === ATTACK_ALL_VISIBLE) {
-      select.value = ATTACK_ALL_VISIBLE;
-    } else if (currentValue && groups[currentValue]) {
+    if (currentValue && groups[currentValue] && groups[currentValue].systemType !== "attackers") {
       select.value = currentValue;
-    } else if (activeGroupId && groups[activeGroupId]) {
+    } else if (activeGroupId && groups[activeGroupId] && groups[activeGroupId].systemType !== "attackers") {
       select.value = activeGroupId;
-    } else {
-      select.value = ATTACK_ALL_VISIBLE;
     }
   }
 
@@ -1813,118 +1780,22 @@
     });
   }
 
-  async function mapAttacksForSelectedTarget() {
+  async function mapAttacksForSelectedGroup() {
     if (attackMappingInProgress) {
       setAttackStatus("Mapeamento de ataques já em andamento.", true);
       return;
     }
 
     const select = document.getElementById("twm_attack_group_select");
-    const value = select ? select.value : "";
+    const groupId = select ? select.value : "";
+    const group = groupId ? groups[groupId] : null;
 
-    if (value === ATTACK_ALL_VISIBLE) {
-      await mapAttacksForVisibleOwnVillages();
-      return;
-    }
-
-    const group = value ? groups[value] : null;
-
-    if (!group) {
-      setAttackStatus("Selecione um grupo ou todas as aldeias visíveis.", true);
+    if (!group || group.systemType === "attackers") {
+      setAttackStatus("Selecione um grupo para mapear ataques.", true);
       return;
     }
 
     await mapAttackForGroup(group);
-  }
-
-  async function mapAttacksForVisibleOwnVillages() {
-    const entries = getVisibleOwnVillagesForAttackMapping();
-
-    if (!entries.length) {
-      setAttackStatus("Nenhuma aldeia própria visível encontrada.", true);
-      return;
-    }
-
-    clearAttackerSourceResults();
-
-    attackMappingCancelled = false;
-    attackMappingInProgress = true;
-    updateAttackButtons();
-    w.__twm_attack_cancel = cancelAttackMapping;
-
-    let ok = 0;
-    let failed = 0;
-
-    setAttackStatus("Mapeando ataques em todas as aldeias visíveis...");
-
-    for (let i = 0; i < entries.length; i++) {
-      if (attackMappingCancelled) {
-        break;
-      }
-
-      const item = entries[i];
-      const coord = item.coord;
-      const village = item.village;
-
-      try {
-        const parsed = await getVillageIncomingAttacks(village, coord);
-
-        if (attackMappingCancelled) {
-          break;
-        }
-
-        if (!parsed) {
-          failed++;
-          continue;
-        }
-
-        processIncomingAttackSources(coord, parsed);
-
-        const raw = parsed.counts;
-
-        if (raw.total > 0) {
-          attackResults[coord] = buildAttackResult(coord, raw);
-          ok++;
-        } else if (attackResults[coord]) {
-          delete attackResults[coord];
-        }
-
-        draw();
-
-        setAttackStatus(
-          "Mapeando todas as aldeias visíveis " +
-          (i + 1) + "/" + entries.length + " | OK: " + coord +
-          " (" + raw.total + " ataque(s))"
-        );
-
-        if (attackMappingCancelled) {
-          break;
-        }
-
-        await sleep(ATTACK_FETCH_DELAY);
-      } catch (err) {
-        failed++;
-        console.error("Erro ao mapear ataque em aldeia visível:", coord, err);
-      }
-    }
-
-    attackMappingInProgress = false;
-    w.__twm_attack_cancel = null;
-    w.__twm_attack_mapping_timer = null;
-    updateAttackButtons();
-    updateAttackInfo();
-    refreshAllPanels();
-    draw();
-
-    if (attackMappingCancelled) {
-      setAttackStatus(
-        "Mapeamento cancelado. Todas visíveis | OK: " + ok + " | Falhas: " + failed
-      );
-    } else {
-      setAttackStatus(
-        "Mapeamento concluído. Todas visíveis | OK: " + ok + " | Falhas: " + failed
-      );
-    }
   }
 
   async function mapAttackForGroup(group) {
@@ -2859,7 +2730,7 @@
     };
 
     document.getElementById("twm_map_group_attack").onclick = function () {
-      mapAttacksForSelectedTarget();
+      mapAttacksForSelectedGroup();
     };
 
     document.getElementById("twm_clear_attack").onclick = function () {
