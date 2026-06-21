@@ -96,15 +96,40 @@
 
   function parseCoords(text) {
     const out = [];
+    const str = String(text || "");
 
-    (String(text || "").match(/\d{3}\s*\|\s*\d{3}|\d{3}\s*[,; ]\s*\d{3}/g) || []).forEach(function (part) {
+    (str.match(/\d{3}\s*\|\s*\d{3}|\d{3}\s*[,; ]\s*\d{3}/g) || []).forEach(function (part) {
       const match = part.match(/(\d{3})\D+(\d{3})/);
+
       if (match) {
         out.push(match[1] + "|" + match[2]);
       }
     });
 
+    const digits = str.replace(/\D/g, "");
+
+    for (let i = 0; i + 6 <= digits.length; i += 6) {
+      out.push(digits.slice(i, i + 3) + "|" + digits.slice(i + 3, i + 6));
+    }
+
     return [...new Set(out)];
+  }
+
+  function formatCoordInput(raw) {
+    const digits = String(raw || "").replace(/\D/g, "");
+    const chunks = [];
+
+    for (let i = 0; i < digits.length; i += 6) {
+      const part = digits.slice(i, i + 6);
+
+      if (part.length <= 3) {
+        chunks.push(part.length === 3 ? part + "|" : part);
+      } else {
+        chunks.push(part.slice(0, 3) + "|" + part.slice(3, 6));
+      }
+    }
+
+    return chunks.join(" ") + (digits.length > 0 && digits.length % 6 === 0 ? " " : "");
   }
 
   function alpha(hex, opacity) {
@@ -539,9 +564,16 @@
       return;
     }
 
+    const coordsArea = panel.querySelector(".twm_coords");
+    const coordsDraft = coordsArea ? coordsArea.value : "";
+
     body.querySelectorAll("input, textarea, button").forEach(function (el) {
       el.disabled = !enabled;
     });
+
+    if (coordsArea) {
+      coordsArea.value = coordsDraft;
+    }
 
     body.style.opacity = enabled ? "1" : "0.55";
     body.style.filter = enabled ? "brightness(1)" : "brightness(0.75)";
@@ -608,6 +640,7 @@
         text: "",
         icon: "",
         note: "",
+        coordInputDraft: "",
         coords: {}
       };
 
@@ -743,7 +776,7 @@
     colorInput.value = group.color;
     textInput.value = group.text || "";
     noteArea.value = group.note || "";
-    coordsArea.value = coordsToText(group);
+    coordsArea.value = group.coordInputDraft || "";
 
     function saveGroupFields() {
       group.name = nameInput.value.trim() || group.name;
@@ -767,6 +800,28 @@
         refreshIconGrid(panel, group);
         draw();
       });
+    });
+
+    coordsArea.addEventListener("input", function () {
+      this.value = formatCoordInput(this.value);
+      group.coordInputDraft = this.value;
+      this.selectionStart = this.selectionEnd = this.value.length;
+    });
+
+    coordsArea.addEventListener("focus", function () {
+      const field = this;
+
+      setTimeout(function () {
+        field.selectionStart = field.selectionEnd = field.value.length;
+      }, 0);
+    });
+
+    coordsArea.addEventListener("click", function () {
+      this.selectionStart = this.selectionEnd = this.value.length;
+    });
+
+    coordsArea.addEventListener("blur", function () {
+      group.coordInputDraft = this.value;
     });
 
     activeCheckbox.addEventListener("click", function (event) {
@@ -800,7 +855,7 @@
       const parsed = parseCoords(coordsArea.value);
 
       if (!parsed.length) {
-        setStatus("Nenhuma coordenada encontrada. Use 565|526.", true);
+        setStatus("Nenhuma coordenada válida para adicionar.", true);
         return;
       }
 
@@ -809,7 +864,9 @@
         group.coords[coord] = 1;
       });
 
-      coordsArea.value = coordsToText(group);
+      group.coordInputDraft = "";
+      coordsArea.value = "";
+      setStatus(parsed.length + " coordenada(s) adicionada(s) em " + group.name + ".");
       draw();
     };
 
@@ -825,6 +882,7 @@
       }
 
       group.coords = {};
+      group.coordInputDraft = "";
       coordsArea.value = "";
       draw();
     };
@@ -868,8 +926,8 @@
     const count = Object.keys(group.coords || {}).length;
     const title = panel.querySelector(".twm_title");
     const head = panel.querySelector(".twm_head");
-    const coordsArea = panel.querySelector(".twm_coords");
     const noteArea = panel.querySelector(".twm_note");
+    const coordsArea = panel.querySelector(".twm_coords");
     const activeCheckbox = panel.querySelector(".twm_active_checkbox");
 
     title.textContent = group.name + " (" + count + ")";
@@ -881,12 +939,12 @@
     panel.querySelector(".twm_info").textContent =
       "Coords: " + count + (isActive ? " | selecionado" : " | bloqueado");
 
-    if (options.forceFields || (coordsArea && document.activeElement !== coordsArea)) {
-      coordsArea.value = coordsToText(group);
-    }
-
     if (options.forceFields || (noteArea && document.activeElement !== noteArea)) {
       noteArea.value = group.note || "";
+    }
+
+    if (coordsArea && document.activeElement !== coordsArea) {
+      coordsArea.value = group.coordInputDraft || "";
     }
 
     refreshIconGrid(panel, group);
