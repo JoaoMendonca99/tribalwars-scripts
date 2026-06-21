@@ -580,13 +580,14 @@
       ? new DOMParser().parseFromString(String(html || ""), "text/html")
       : parseHtmlDoc(html);
     const tables = Array.from(doc.querySelectorAll("table"));
+    const aldeiaResultHeader = /Aldeia\s*\(\s*\d+(?:\s+resultados?)?\s*\)/i;
     let resultTable = null;
 
     for (let t = 0; t < tables.length; t++) {
       const table = tables[t];
       const text = (table.innerText || "").replace(/\s+/g, " ").trim();
 
-      if (/Aldeia\s*\(\d+\)/i.test(text) && /\bPontos\b/i.test(text)) {
+      if (aldeiaResultHeader.test(text) && /\bPontos\b/i.test(text)) {
         resultTable = table;
         break;
       }
@@ -596,6 +597,15 @@
       console.warn("[NativeGroupParser] tabela Aldeia(N) não encontrada");
       return [];
     }
+
+    const tableText = (resultTable.innerText || "").replace(/\s+/g, " ").trim();
+    const expectedMatch = tableText.match(/Aldeia\s*\(\s*(\d+)(?:\s+resultados?)?\s*\)/i);
+    const expectedCount = expectedMatch ? Number(expectedMatch[1]) : null;
+
+    console.log("[NativeGroupParser] tabela encontrada", {
+      tableText: tableText.slice(0, 500),
+      expectedCount: expectedCount
+    });
 
     const villages = [];
 
@@ -607,7 +617,7 @@
         return;
       }
 
-      if (/^Aldeia\s*\(/i.test(rowText)) {
+      if (aldeiaResultHeader.test(rowText)) {
         return;
       }
 
@@ -661,17 +671,12 @@
     });
 
     const deduped = dedupeVillageRefs(villages);
-    const tableText = (resultTable.innerText || "").replace(/\s+/g, " ").trim();
-    const expectedMatch = tableText.match(/Aldeia\s*\((\d+)\)/i);
-    const expectedCount = expectedMatch ? Number(expectedMatch[1]) : null;
 
-    if (DEBUG_NATIVE_GROUPS) {
-      console.log("[NativeGroupParser]", {
-        expectedCount: expectedCount,
-        parsedCount: deduped.length,
-        villages: deduped
-      });
-    }
+    console.log("[NativeGroupParser]", {
+      expectedCount: expectedCount,
+      parsedCount: deduped.length,
+      villages: deduped
+    });
 
     if (expectedCount != null && expectedCount !== deduped.length) {
       console.warn("[NativeGroupParser] count divergente", {
