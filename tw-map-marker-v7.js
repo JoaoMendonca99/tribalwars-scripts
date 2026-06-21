@@ -7,7 +7,6 @@
   const w = window;
 
   if (!w.TWMap || !w.TWMap.villages) {
-    alert("Abra isso dentro da tela do mapa.");
     return;
   }
 
@@ -37,21 +36,20 @@
   const groups = {};
 
   const ICON_PRESETS = [
-    { value: "", label: "Sem ícone" },
-    { value: "spear", label: "Lança" },
-    { value: "sword", label: "Espada" },
-    { value: "axe", label: "Machado" },
-    { value: "archer", label: "Arqueiro" },
-    { value: "spy", label: "Espião" },
-    { value: "light", label: "Cavalaria leve" },
-    { value: "marcher", label: "Arqueiro montado" },
-    { value: "heavy", label: "Cavalaria pesada" },
-    { value: "ram", label: "Aríete" },
-    { value: "catapult", label: "Catapulta" },
-    { value: "knight", label: "Paladino" },
-    { value: "snob", label: "Nobre" },
-    { value: "militia", label: "Milícia" },
-    { value: "custom", label: "Personalizado" }
+    { label: "Sem ícone", value: "", src: "" },
+    { label: "Lança", value: "spear", src: "/graphic/unit_map/spear.png" },
+    { label: "Espada", value: "sword", src: "/graphic/unit_map/sword.png" },
+    { label: "Machado", value: "axe", src: "/graphic/unit_map/axe.png" },
+    { label: "Arqueiro", value: "archer", src: "/graphic/unit_map/archer.webp" },
+    { label: "Espião", value: "spy", src: "/graphic/unit_map/spy.webp" },
+    { label: "Leve", value: "light", src: "/graphic/unit_map/light.png" },
+    { label: "Arq. montado", value: "marcher", src: "/graphic/unit_map/marcher.png" },
+    { label: "Pesada", value: "heavy", src: "/graphic/unit_map/heavy.webp" },
+    { label: "Aríete", value: "ram", src: "/graphic/unit_map/ram.webp" },
+    { label: "Catapulta", value: "catapult", src: "/graphic/unit_map/catapult.webp" },
+    { label: "Paladino", value: "knight", src: "/graphic/unit_map/knight.png" },
+    { label: "Nobre", value: "snob", src: "/graphic/unit_map/snob.png" },
+    { label: "Milícia", value: "militia", src: "/graphic/unit_map/militia.webp" }
   ];
 
   function host() {
@@ -247,43 +245,114 @@
     });
   }
 
-  function showTextFallback(box, group) {
-    box.textContent = group.text || "";
+  function getEffectiveIcon(group) {
+    const custom = String(group.iconUrl || "").trim();
+
+    if (custom) {
+      return custom;
+    }
+
+    return String(group.icon || "").trim();
   }
 
-  function loadIconIntoBox(box, group) {
-    const candidates = iconCandidates(group.icon);
+  function getTextFontSize(text) {
+    const len = String(text || "").length;
 
-    if (!candidates.length) {
-      showTextFallback(box, group);
+    if (len <= 2) {
+      return "14px";
+    }
+
+    if (len <= 4) {
+      return "11px";
+    }
+
+    return "9px";
+  }
+
+  function addMarkTextSpan(container, text) {
+    const span = document.createElement("span");
+
+    span.className = "twm_mark_text";
+    span.textContent = text;
+    span.style.cssText =
+      "font-weight:bold;" +
+      "color:#fff;" +
+      "text-shadow:1px 1px 2px #000,-1px -1px 2px #000;" +
+      "max-width:100%;" +
+      "overflow:hidden;" +
+      "white-space:nowrap;" +
+      "text-overflow:ellipsis;" +
+      "line-height:1;" +
+      "font-size:" + getTextFontSize(text) + ";";
+
+    container.appendChild(span);
+  }
+
+  function populateMarkContent(container, group) {
+    container.innerHTML = "";
+
+    const text = String(group.text || "").trim();
+    const iconValue = getEffectiveIcon(group);
+    const candidates = iconCandidates(iconValue);
+    const hasText = text.length > 0;
+    const hasIcon = candidates.length > 0;
+
+    if (!hasText && !hasIcon) {
       return;
     }
 
-    const icon = document.createElement("img");
-    let index = 0;
+    const content = document.createElement("div");
 
-    icon.alt = group.text || group.name || "";
-    icon.style.cssText =
-      "max-width:20px;" +
-      "max-height:20px;" +
-      "width:auto;" +
-      "height:auto;" +
-      "pointer-events:none;";
+    content.className = "twm_mark_content";
+    content.style.cssText =
+      "display:flex;" +
+      "flex-direction:column;" +
+      "align-items:center;" +
+      "justify-content:center;" +
+      "gap:1px;" +
+      "width:100%;" +
+      "height:100%;" +
+      "padding:1px;" +
+      "box-sizing:border-box;";
 
-    icon.onerror = function () {
-      index += 1;
+    if (hasIcon) {
+      const iconImg = document.createElement("img");
+      let index = 0;
 
-      if (index < candidates.length) {
-        this.src = candidates[index];
-        return;
-      }
+      iconImg.className = "twm_mark_icon";
+      iconImg.alt = text || group.name || "";
+      iconImg.style.cssText =
+        "max-width:18px;" +
+        "max-height:14px;" +
+        "width:auto;" +
+        "height:auto;" +
+        "pointer-events:none;" +
+        "flex-shrink:0;";
 
-      this.remove();
-      showTextFallback(box, group);
-    };
+      iconImg.onerror = function () {
+        index += 1;
 
-    icon.src = candidates[0];
-    box.appendChild(icon);
+        if (index < candidates.length) {
+          this.src = candidates[index];
+          return;
+        }
+
+        this.remove();
+
+        if (hasText && !content.querySelector(".twm_mark_text")) {
+          addMarkTextSpan(content, text);
+        }
+      };
+
+      iconImg.src = candidates[0];
+      content.appendChild(iconImg);
+    }
+
+    if (hasText) {
+      addMarkTextSpan(content, text);
+    }
+
+    container.appendChild(content);
   }
 
   function markImg(img, coord, group, isActive) {
@@ -334,16 +403,10 @@
       "display:flex;" +
       "align-items:center;" +
       "justify-content:center;" +
-      "color:#fff;" +
-      "font-weight:bold;" +
-      "font-size:14px;" +
-      "text-shadow:1px 1px 2px #000,-1px -1px 2px #000;" +
-      "line-height:1;" +
-      "text-align:center;" +
       "overflow:hidden;" +
       "filter:" + brightness + ";";
 
-    loadIconIntoBox(box, group);
+    populateMarkContent(box, group);
     parent.appendChild(box);
   }
 
@@ -392,6 +455,28 @@
     draw();
   }
 
+  function setStatus(message, isError) {
+    const el = document.getElementById("twm_status");
+
+    if (!el) {
+      return;
+    }
+
+    el.textContent = message || "";
+    el.style.color = isError ? "#7a0000" : "#333";
+  }
+
+  function updateClickButton() {
+    const btn = document.getElementById("twm_click_mode");
+
+    if (!btn) {
+      return;
+    }
+
+    btn.textContent = "Modo clique: " + (clickMode ? "ON" : "OFF");
+    btn.style.fontWeight = clickMode ? "bold" : "normal";
+  }
+
   function drag(panel, header) {
     let offsetX = 0;
     let offsetY = 0;
@@ -425,12 +510,51 @@
     });
   }
 
-  function iconOptionsHtml() {
+  function buildIconGridHtml() {
+    const btnStyle =
+      "width:26px;height:26px;padding:2px;margin:1px;" +
+      "border:1px solid #7d510f;background:#fff;cursor:pointer;" +
+      "display:inline-flex;align-items:center;justify-content:center;" +
+      "vertical-align:middle;box-sizing:border-box;";
+
     return ICON_PRESETS.map(function (preset) {
+      if (!preset.value) {
+        return (
+          '<button type="button" class="twm_icon_btn" data-icon="" title="' +
+          preset.label +
+          '" style="' + btnStyle + 'font-size:9px;line-height:1;">Sem</button>'
+        );
+      }
+
       return (
-        '<option value="' + preset.value + '">' + preset.label + "</option>"
+        '<button type="button" class="twm_icon_btn" data-icon="' +
+        preset.value +
+        '" title="' +
+        preset.label +
+        '" style="' + btnStyle + '">' +
+        '<img src="' + preset.src + '" alt="" style="width:16px;height:16px;pointer-events:none;">' +
+        "</button>"
       );
     }).join("");
+  }
+
+  function refreshIconGrid(panel, group) {
+    const grid = panel.querySelector(".twm_icon_grid");
+
+    if (!grid) {
+      return;
+    }
+
+    const hasCustomUrl = String(group.iconUrl || "").trim().length > 0;
+
+    grid.querySelectorAll(".twm_icon_btn").forEach(function (btn) {
+      const iconVal = btn.dataset.icon || "";
+      const selected = !hasCustomUrl && (group.icon || "") === iconVal;
+
+      btn.style.border = selected ? "2px solid #004cff" : "1px solid #7d510f";
+      btn.style.background = selected ? "#fff8dc" : "#fff";
+      btn.style.boxShadow = selected ? "0 0 3px #004cff" : "none";
+    });
   }
 
   function createMainPanel() {
@@ -461,6 +585,7 @@
         '<button id="twm_click_mode">Modo clique: OFF</button> ' +
         '<button id="twm_clear_all">Limpar tudo</button>' +
         '<div id="twm_main_info" style="margin-top:6px;font-size:11px"></div>' +
+        '<div id="twm_status" style="margin-top:4px;color:#7a0000;font-size:11px;"></div>' +
       "</div>";
 
     host().appendChild(panel);
@@ -475,17 +600,34 @@
         color: "#ff0000",
         text: "",
         icon: "",
+        iconUrl: "",
+        note: "",
         coords: {}
       };
 
       createGroupPanel(groups[id]);
       setActiveGroup(id);
+      setStatus("Grupo criado: Novo grupo");
     };
 
     document.getElementById("twm_click_mode").onclick = function () {
+      const active = activeGroupId ? groups[activeGroupId] : null;
+
+      if (!active) {
+        clickMode = false;
+        updateClickButton();
+        setStatus("Crie um grupo antes de ativar o modo clique.", true);
+        return;
+      }
+
       clickMode = !clickMode;
-      this.textContent = "Modo clique: " + (clickMode ? "ON" : "OFF");
-      this.style.fontWeight = clickMode ? "bold" : "normal";
+      updateClickButton();
+
+      if (clickMode) {
+        setStatus("Modo clique ativado para: " + active.name);
+      } else {
+        setStatus("Modo clique desativado.");
+      }
     };
 
     document.getElementById("twm_clear_all").onclick = function () {
@@ -522,24 +664,6 @@
     };
   }
 
-  function syncIconPreset(iconPreset, iconUrl, group) {
-    const presetValues = ICON_PRESETS.map(function (preset) {
-      return preset.value;
-    }).filter(function (value) {
-      return value !== "custom";
-    });
-
-    if (presetValues.includes(group.icon || "")) {
-      iconPreset.value = group.icon;
-    } else if (group.icon) {
-      iconPreset.value = "custom";
-    } else {
-      iconPreset.value = "";
-    }
-
-    iconUrl.value = group.icon || "";
-  }
-
   function createGroupPanel(group) {
     const panel = document.createElement("div");
     const panelIndex = document.querySelectorAll(".twm_panel").length;
@@ -569,14 +693,23 @@
       "</div>" +
       '<div class="twm_body" style="padding:7px">' +
         'Nome: <input class="twm_name" style="width:115px"> ' +
-        'Cor: <input class="twm_color" type="color"> ' +
-        'Texto: <input class="twm_text_symbol" maxlength="6" style="width:42px">' +
+        'Cor: <input class="twm_color" type="color">' +
         "<br>" +
-        'Ícone: <select class="twm_icon_preset" style="width:130px;margin-top:5px">' +
-          iconOptionsHtml() +
-        "</select> " +
-        'URL: <input class="twm_icon_url" placeholder="axe ou /graphic/unit_map/snob.png" style="width:150px">' +
-        '<textarea class="twm_coords" style="width:315px;height:80px;margin-top:6px" placeholder="Coords deste grupo. Ex: 565|526"></textarea>' +
+        'Texto mapa: <input class="twm_text_symbol" maxlength="6" style="width:52px;margin-top:4px"> ' +
+        '<span style="font-size:10px;color:#555">máx. 6</span>' +
+        "<br>" +
+        '<div style="margin-top:6px;font-weight:bold">Ícone:</div>' +
+        '<div class="twm_icon_grid" style="display:flex;flex-wrap:wrap;gap:2px;margin:4px 0;">' +
+          buildIconGridHtml() +
+        "</div>" +
+        'URL personalizada:<br>' +
+        '<input class="twm_icon_url" placeholder="/graphic/unit_map/snob.png" style="width:315px;margin-top:2px">' +
+        "<br>" +
+        'Observação:<br>' +
+        '<textarea class="twm_note" style="width:315px;height:44px;margin-top:2px" placeholder="Anotações do grupo (não aparece no mapa)"></textarea>' +
+        "<br>" +
+        'Coordenadas:<br>' +
+        '<textarea class="twm_coords" style="width:315px;height:72px;margin-top:2px" placeholder="565|526"></textarea>' +
         "<br>" +
         '<button class="twm_add_coords">Adicionar coords</button> ' +
         '<button class="twm_copy_coords">Copiar</button> ' +
@@ -590,39 +723,59 @@
     const nameInput = panel.querySelector(".twm_name");
     const colorInput = panel.querySelector(".twm_color");
     const textInput = panel.querySelector(".twm_text_symbol");
-    const iconPreset = panel.querySelector(".twm_icon_preset");
-    const iconUrl = panel.querySelector(".twm_icon_url");
+    const iconUrlInput = panel.querySelector(".twm_icon_url");
+    const noteArea = panel.querySelector(".twm_note");
     const coordsArea = panel.querySelector(".twm_coords");
+    const iconGrid = panel.querySelector(".twm_icon_grid");
 
     nameInput.value = group.name;
     colorInput.value = group.color;
     textInput.value = group.text || "";
+    iconUrlInput.value = group.iconUrl || "";
+    noteArea.value = group.note || "";
     coordsArea.value = coordsToText(group);
-    syncIconPreset(iconPreset, iconUrl, group);
 
     function saveGroupFields() {
       group.name = nameInput.value.trim() || group.name;
       group.color = colorInput.value || group.color;
-      group.text = textInput.value.trim() || "";
-      group.icon = iconUrl.value.trim() || "";
+      group.text = textInput.value.trim().slice(0, 6);
+      group.iconUrl = iconUrlInput.value.trim();
+      group.note = noteArea.value;
     }
 
-    [nameInput, colorInput, textInput, iconUrl].forEach(function (input) {
+    textInput.addEventListener("input", function () {
+      if (this.value.length > 6) {
+        this.value = this.value.slice(0, 6);
+      }
+
+      saveGroupFields();
+      draw();
+    });
+
+    [nameInput, colorInput, textInput, iconUrlInput, noteArea].forEach(function (input) {
       input.addEventListener("change", function () {
         saveGroupFields();
+        refreshIconGrid(panel, group);
         draw();
       });
     });
 
-    iconPreset.onchange = function () {
-      if (this.value === "custom") {
-        return;
-      }
-
-      iconUrl.value = this.value;
+    iconUrlInput.addEventListener("input", function () {
       saveGroupFields();
+      refreshIconGrid(panel, group);
       draw();
-    };
+    });
+
+    iconGrid.querySelectorAll(".twm_icon_btn").forEach(function (btn) {
+      btn.onclick = function () {
+        group.icon = btn.dataset.icon || "";
+        group.iconUrl = "";
+        iconUrlInput.value = "";
+        saveGroupFields();
+        refreshIconGrid(panel, group);
+        draw();
+      };
+    });
 
     panel.querySelector(".twm_set_active").onclick = function () {
       saveGroupFields();
@@ -635,7 +788,7 @@
       const parsed = parseCoords(coordsArea.value);
 
       if (!parsed.length) {
-        alert("Nenhuma coordenada encontrada. Use 565|526.");
+        setStatus("Nenhuma coordenada encontrada. Use 565|526.", true);
         return;
       }
 
@@ -675,15 +828,23 @@
       if (activeGroupId === group.id) {
         const remaining = Object.keys(groups);
         activeGroupId = remaining.length ? remaining[0] : null;
+
+        if (!activeGroupId) {
+          clickMode = false;
+          updateClickButton();
+          setStatus("Nenhum grupo ativo.", true);
+        }
       }
 
       draw();
     };
 
-    refreshGroupPanel(group);
+    refreshGroupPanel(group, { forceFields: true });
   }
 
-  function refreshGroupPanel(group) {
+  function refreshGroupPanel(group, options) {
+    options = options || {};
+
     const panel = document.getElementById("twm_panel_" + group.id);
 
     if (!panel) {
@@ -694,6 +855,8 @@
     const count = Object.keys(group.coords || {}).length;
     const title = panel.querySelector(".twm_title");
     const body = panel.querySelector(".twm_body");
+    const coordsArea = panel.querySelector(".twm_coords");
+    const noteArea = panel.querySelector(".twm_note");
 
     title.textContent =
       (isActive ? "EDITANDO: " : "Grupo: ") + group.name + " (" + count + ")";
@@ -701,7 +864,15 @@
     panel.querySelector(".twm_info").textContent =
       "Coords: " + count + (isActive ? " | ativo para clique" : " | inativo");
 
-    panel.querySelector(".twm_coords").value = coordsToText(group);
+    if (options.forceFields || (coordsArea && document.activeElement !== coordsArea)) {
+      coordsArea.value = coordsToText(group);
+    }
+
+    if (options.forceFields || (noteArea && document.activeElement !== noteArea)) {
+      noteArea.value = group.note || "";
+    }
+
+    refreshIconGrid(panel, group);
 
     panel.style.opacity = "1";
     panel.style.filter = "none";
@@ -762,7 +933,9 @@
     const active = activeGroupId ? groups[activeGroupId] : null;
 
     if (!active) {
-      alert("Crie ou selecione um grupo antes de marcar aldeias.");
+      clickMode = false;
+      updateClickButton();
+      setStatus("Crie ou selecione um grupo antes de marcar aldeias.", true);
       return;
     }
 
