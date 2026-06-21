@@ -246,12 +246,6 @@
   }
 
   function getEffectiveIcon(group) {
-    const custom = String(group.iconUrl || "").trim();
-
-    if (custom) {
-      return custom;
-    }
-
     return String(group.icon || "").trim();
   }
 
@@ -485,7 +479,11 @@
     header.style.cursor = "move";
 
     header.onmousedown = function (event) {
-      if (event.target.tagName === "BUTTON") {
+      if (
+        event.target.tagName === "BUTTON" ||
+        event.target.tagName === "INPUT" ||
+        event.target.closest("label")
+      ) {
         return;
       }
 
@@ -545,11 +543,9 @@
       return;
     }
 
-    const hasCustomUrl = String(group.iconUrl || "").trim().length > 0;
-
     grid.querySelectorAll(".twm_icon_btn").forEach(function (btn) {
       const iconVal = btn.dataset.icon || "";
-      const selected = !hasCustomUrl && (group.icon || "") === iconVal;
+      const selected = (group.icon || "") === iconVal;
 
       btn.style.border = selected ? "2px solid #004cff" : "1px solid #7d510f";
       btn.style.background = selected ? "#fff8dc" : "#fff";
@@ -600,7 +596,6 @@
         color: "#ff0000",
         text: "",
         icon: "",
-        iconUrl: "",
         note: "",
         coords: {}
       };
@@ -686,30 +681,35 @@
       "width:335px;";
 
     panel.innerHTML =
-      '<div class="twm_head" style="background:#d7bd82;padding:6px;font-weight:bold;">' +
-        '<span class="twm_title"></span>' +
-        '<button class="twm_del_group" style="float:right;margin-left:4px">Excluir</button>' +
-        '<button class="twm_set_active" style="float:right">Selecionar</button>' +
+      '<div class="twm_head" style="background:#d7bd82;padding:6px;font-weight:bold;display:flex;align-items:center;gap:6px;min-width:0;">' +
+        '<span class="twm_title" style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></span>' +
+        '<label class="twm_active_label" title="Selecionar este grupo" style="flex-shrink:0;display:flex;align-items:center;gap:3px;font-size:11px;font-weight:normal;cursor:pointer;opacity:1;filter:none;">' +
+          '<input type="checkbox" class="twm_active_checkbox">' +
+          "Selecionado" +
+        "</label>" +
+        '<button class="twm_del_group" style="flex-shrink:0;margin:0">Excluir</button>' +
       "</div>" +
       '<div class="twm_body" style="padding:7px">' +
-        'Nome: <input class="twm_name" style="width:115px"> ' +
-        'Cor: <input class="twm_color" type="color">' +
-        "<br>" +
-        'Texto mapa: <input class="twm_text_symbol" maxlength="6" style="width:52px;margin-top:4px"> ' +
-        '<span style="font-size:10px;color:#555">máx. 6</span>' +
-        "<br>" +
+        '<div class="twm_row" style="display:flex;align-items:center;gap:4px;margin-top:0;">' +
+          '<span style="flex-shrink:0">Nome:</span>' +
+          '<input class="twm_name twm_name_input" style="flex:1;min-width:0">' +
+          '<span style="flex-shrink:0">Cor:</span>' +
+          '<input class="twm_color twm_color_input" type="color" style="width:42px;height:24px;padding:0;border:1px solid #7d510f;flex-shrink:0">' +
+        "</div>" +
+        '<div class="twm_row" style="display:flex;align-items:center;gap:4px;margin-top:4px;">' +
+          '<span style="flex-shrink:0">Texto mapa:</span>' +
+          '<input class="twm_text_symbol" maxlength="6" style="width:52px;flex-shrink:0">' +
+          '<span style="font-size:10px;color:#555">máx. 6</span>' +
+        "</div>" +
         '<div style="margin-top:6px;font-weight:bold">Ícone:</div>' +
         '<div class="twm_icon_grid" style="display:flex;flex-wrap:wrap;gap:2px;margin:4px 0;">' +
           buildIconGridHtml() +
         "</div>" +
-        'URL personalizada:<br>' +
-        '<input class="twm_icon_url" placeholder="/graphic/unit_map/snob.png" style="width:315px;margin-top:2px">' +
-        "<br>" +
         'Observação:<br>' +
-        '<textarea class="twm_note" style="width:315px;height:44px;margin-top:2px" placeholder="Anotações do grupo (não aparece no mapa)"></textarea>' +
+        '<textarea class="twm_note" style="width:100%;height:44px;margin-top:2px;box-sizing:border-box" placeholder="Anotações do grupo (não aparece no mapa)"></textarea>' +
         "<br>" +
         'Coordenadas:<br>' +
-        '<textarea class="twm_coords" style="width:315px;height:72px;margin-top:2px" placeholder="565|526"></textarea>' +
+        '<textarea class="twm_coords" style="width:100%;height:38px;margin-top:2px;box-sizing:border-box;overflow-y:auto;resize:vertical" placeholder="565|526"></textarea>' +
         "<br>" +
         '<button class="twm_add_coords">Adicionar coords</button> ' +
         '<button class="twm_copy_coords">Copiar</button> ' +
@@ -723,15 +723,14 @@
     const nameInput = panel.querySelector(".twm_name");
     const colorInput = panel.querySelector(".twm_color");
     const textInput = panel.querySelector(".twm_text_symbol");
-    const iconUrlInput = panel.querySelector(".twm_icon_url");
     const noteArea = panel.querySelector(".twm_note");
     const coordsArea = panel.querySelector(".twm_coords");
     const iconGrid = panel.querySelector(".twm_icon_grid");
+    const activeCheckbox = panel.querySelector(".twm_active_checkbox");
 
     nameInput.value = group.name;
     colorInput.value = group.color;
     textInput.value = group.text || "";
-    iconUrlInput.value = group.iconUrl || "";
     noteArea.value = group.note || "";
     coordsArea.value = coordsToText(group);
 
@@ -739,7 +738,6 @@
       group.name = nameInput.value.trim() || group.name;
       group.color = colorInput.value || group.color;
       group.text = textInput.value.trim().slice(0, 6);
-      group.iconUrl = iconUrlInput.value.trim();
       group.note = noteArea.value;
     }
 
@@ -752,7 +750,7 @@
       draw();
     });
 
-    [nameInput, colorInput, textInput, iconUrlInput, noteArea].forEach(function (input) {
+    [nameInput, colorInput, textInput, noteArea].forEach(function (input) {
       input.addEventListener("change", function () {
         saveGroupFields();
         refreshIconGrid(panel, group);
@@ -760,27 +758,35 @@
       });
     });
 
-    iconUrlInput.addEventListener("input", function () {
+    activeCheckbox.addEventListener("click", function (event) {
+      event.stopPropagation();
+    });
+
+    activeCheckbox.addEventListener("change", function () {
       saveGroupFields();
-      refreshIconGrid(panel, group);
-      draw();
+
+      if (this.checked) {
+        setActiveGroup(group.id);
+        return;
+      }
+
+      if (activeGroupId === group.id) {
+        activeGroupId = null;
+        clickMode = false;
+        updateClickButton();
+        refreshAllPanels();
+        draw();
+      }
     });
 
     iconGrid.querySelectorAll(".twm_icon_btn").forEach(function (btn) {
       btn.onclick = function () {
         group.icon = btn.dataset.icon || "";
-        group.iconUrl = "";
-        iconUrlInput.value = "";
         saveGroupFields();
         refreshIconGrid(panel, group);
         draw();
       };
     });
-
-    panel.querySelector(".twm_set_active").onclick = function () {
-      saveGroupFields();
-      setActiveGroup(group.id);
-    };
 
     panel.querySelector(".twm_add_coords").onclick = function () {
       saveGroupFields();
@@ -854,12 +860,17 @@
     const isActive = group.id === activeGroupId;
     const count = Object.keys(group.coords || {}).length;
     const title = panel.querySelector(".twm_title");
+    const head = panel.querySelector(".twm_head");
     const body = panel.querySelector(".twm_body");
     const coordsArea = panel.querySelector(".twm_coords");
     const noteArea = panel.querySelector(".twm_note");
+    const activeCheckbox = panel.querySelector(".twm_active_checkbox");
 
-    title.textContent =
-      (isActive ? "EDITANDO: " : "Grupo: ") + group.name + " (" + count + ")";
+    title.textContent = group.name + " (" + count + ")";
+
+    if (activeCheckbox) {
+      activeCheckbox.checked = isActive;
+    }
 
     panel.querySelector(".twm_info").textContent =
       "Coords: " + count + (isActive ? " | ativo para clique" : " | inativo");
@@ -876,6 +887,11 @@
 
     panel.style.opacity = "1";
     panel.style.filter = "none";
+
+    if (head) {
+      head.style.opacity = "1";
+      head.style.filter = "none";
+    }
 
     if (isActive) {
       panel.style.borderColor = group.color;
