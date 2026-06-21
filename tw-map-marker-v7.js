@@ -75,6 +75,7 @@
   let attackerSourceResults = {};
 
   const ATTACKERS_GROUP_ID = "system_attackers";
+  const DEBUG_ATTACK_PARSER = true;
 
   const ATTACK_RISK_COLORS = {
     scout: "#00bfff",
@@ -368,6 +369,20 @@
     }
 
     return false;
+  }
+
+  function isOwnCoord(coord) {
+    if (!coord) {
+      return false;
+    }
+
+    const village = w.TWMap.villages && w.TWMap.villages[keyOf(coord)];
+
+    if (!village) {
+      return false;
+    }
+
+    return isOwnVillage(village);
   }
 
   function getVisibleOwnVillagesForAttackMapping() {
@@ -666,6 +681,12 @@
     });
   }
 
+  function isIncomingChegandoLabel(text) {
+    const label = String(text || "").trim();
+
+    return /^chegando(\s*\(\d+\))?$/i.test(label) || /^chegando\s*\(\d+\)/i.test(label);
+  }
+
   function isNotDetectedByTowerText(text) {
     return /n[aã]o ser[aá] detectad|nao sera detectad|não será detectad|nicht.*erkannt|not be detected|won't be detected|nao.*detectad/.test(text);
   }
@@ -676,88 +697,209 @@
     }
 
     return (
-      /ser[aá] detectad|sera detectad|será detectad|will be detected|wird.*erkannt|detected by the watch|detectado pela torre|ataque ser[aá] detectad|torre de vigia/.test(text)
+      /ser[aá] detectad|sera detectad|será detectad|will be detected|wird.*erkannt|detected by the watch|detectado pela torre|ataque ser[aá] detectad|ser[aá] detectado por uma torre de vigia|torre de vigia/.test(text)
     );
+  }
+
+  function rowHasCommandGraphic(rowHtml) {
+    return /graphic\/(command|unit|unit_map)/.test(rowHtml);
   }
 
   function isIncomingCommandRow(row) {
-    const hay = (row.innerHTML || "").toLowerCase();
+    if (!row || row.querySelector("th")) {
+      return false;
+    }
 
-    return (
-      /graphic\/(command|unit|unit_map)/.test(hay) ||
-      /attack|ataque|angriff|spy|snob|ram|catapult|explorador|nobre|ariete|catapulta/.test(hay)
-    );
+    const rowHtml = (row.innerHTML || "").toLowerCase();
+    const rowText = (row.innerText || "").trim();
+
+    if (!rowText || rowText.length < 4) {
+      return false;
+    }
+
+    if (isIncomingChegandoLabel(rowText)) {
+      return false;
+    }
+
+    if (!rowHasCommandGraphic(rowHtml)) {
+      return false;
+    }
+
+    return true;
   }
 
-  function classifyAttackRow(row) {
+  function shouldIgnoreFarmOrReturnRow(rowText, rowHtml) {
+    const text = String(rowText || "").toLowerCase();
+    const html = String(rowHtml || "").toLowerCase();
+    const hay = text + " " + html;
+
+    if (/assistente de saque/.test(hay)) {
+      return true;
+    }
+
+    if (/graphic\/command\/return|graphic\/unit\/return|\/return\.png|\/return\.webp/.test(hay)) {
+      return true;
+    }
+
+    if (/\bretornando\b/.test(hay) || /\breturning\b/.test(hay)) {
+      return true;
+    }
+
+    if (/\bretorno\b/.test(text) && !/\breturn\b/.test(text)) {
+      return true;
+    }
+
+    if (/\bpilhagem\b/.test(hay)) {
+      return true;
+    }
+
+    if (/aldeia de b[aá]rbaros/.test(hay)) {
+      return true;
+    }
+
+    if (/\bfarm\b/.test(text) && (/assistente|saque|pilhagem/.test(hay))) {
+      return true;
+    }
+
+    if (/\(\s*\d{3}\s*\|\s*\d{3}\s*\)[^|]{0,40}b[aá]rbar/.test(hay)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  function buildIncomingCommandCounts(row) {
     const counts = emptyAttackCounts();
 
     counts.total = 1;
 
-    const imgs = Array.from(row.querySelectorAll("img")).map(function (img) {
+    const rowText = (row.innerText || "").toLowerCase();
+    const rowHtml = (row.innerHTML || "").toLowerCase();
+
+    const imgData = Array.from(row.querySelectorAll("img")).map(function (img) {
       return (
         (img.getAttribute("src") || "") + " " +
         (img.getAttribute("title") || "") + " " +
         (img.getAttribute("alt") || "")
-      );
-    }).join(" ").toLowerCase();
+      ).toLowerCase();
+    }).join(" ");
 
-    const text = (row.textContent || "").toLowerCase();
-    const imgTitles = Array.from(row.querySelectorAll("img")).map(function (img) {
-      return (img.getAttribute("title") || "") + " " + (img.getAttribute("alt") || "");
-    }).join(" ").toLowerCase();
+    const hayImg = imgData + " " + rowHtml;
 
-    const hay = imgs + " " + text;
-    const fullText = text + " " + imgTitles;
+    if (isNotDetectedByTowerText(rowText)) {
+      counts.notDetectedByTower = 1;
 
-    if (isNotDetectedByTowerText(fullText)) {
-      counts.notDetectedByTower += 1;
-
-      if (/spy|explorador|scout|spion|verkenner|unit_map\/spy|unit\/spy/.test(hay)) {
-        counts.scout += 1;
+      if (
+        /unit_map\/spy|unit\/spy|unit_spy|graphic\/command\/spy|\/spy\.webp|\/spy\.png/.test(hayImg) ||
+        /\bexplorador\b/.test(rowText)
+      ) {
+        counts.scout = 1;
       } else {
-        counts.unknown += 1;
+        counts.unknown = 1;
       }
 
       return counts;
     }
 
-    if (isTowerPendingText(fullText)) {
-      counts.towerPending += 1;
-      counts.willBeDetectedByTower += 1;
+    if (isTowerPendingText(rowText)) {
+      counts.towerPending = 1;
+      counts.willBeDetectedByTower = 1;
       return counts;
     }
 
-    if (/spy|explorador|scout|spion|verkenner|unit_map\/spy|unit\/spy/.test(hay)) {
-      counts.scout += 1;
+    if (
+      /unit_map\/spy|unit\/spy|unit_spy|graphic\/command\/spy|\/spy\.webp|\/spy\.png/.test(hayImg) ||
+      /\bexplorador\b/.test(rowText) ||
+      /\bscout\b/.test(rowText)
+    ) {
+      counts.scout = 1;
       return counts;
     }
 
-    if (/snob|nobre|adel|fürst|prince|unit_map\/snob|unit\/snob/.test(hay)) {
-      counts.noble += 1;
-      counts.detectedRealAttack += 1;
-    } else if (/\bram\b|ariete|sturmramme|ramme|unit_map\/ram|unit\/ram/.test(hay)) {
-      counts.ram += 1;
-      counts.detectedRealAttack += 1;
-    } else if (/catapult|catapulta|katapult|unit_map\/catapult|unit\/catapult/.test(hay)) {
-      counts.catapult += 1;
-      counts.detectedRealAttack += 1;
-    } else if (/attack_small|ataque pequeno|kleiner angriff|small attack|pequeno/.test(hay)) {
-      counts.small += 1;
-      counts.detectedRealAttack += 1;
-    } else if (/attack_medium|ataque m[ée]dio|medium attack|mittlerer|medio/.test(hay)) {
-      counts.medium += 1;
-      counts.detectedRealAttack += 1;
-    } else if (/attack_large|ataque grande|large attack|gro[ßs]er angriff|grande/.test(hay)) {
-      counts.large += 1;
-      counts.detectedRealAttack += 1;
-    } else if (/attack|ataque|angriff|graphic\/command\/attack|graphic\/unit\/att/.test(hay)) {
-      counts.unknown += 1;
-    } else {
-      counts.unknown += 1;
+    if (
+      /unit_map\/snob|unit\/snob|unit_snob|graphic\/command\/snob|\/snob\.webp|\/snob\.png/.test(hayImg) ||
+      /\bnobres\b/.test(rowText) ||
+      /ataque com nobre/.test(rowText)
+    ) {
+      counts.noble = 1;
+      counts.detectedRealAttack = 1;
+      return counts;
     }
+
+    if (/\bram\b|unit_map\/ram|unit\/ram|unit_ram|\/ram\.webp|\/ram\.png|\bar[ií]ete\b/.test(hayImg + " " + rowText)) {
+      counts.ram = 1;
+      counts.detectedRealAttack = 1;
+      return counts;
+    }
+
+    if (/catapult|unit_map\/catapult|unit_catapult|\/catapult\.webp|catapulta/.test(hayImg + " " + rowText)) {
+      counts.catapult = 1;
+      counts.detectedRealAttack = 1;
+      return counts;
+    }
+
+    if (/attack_large|ataque grande|large attack|gro[ßs]er angriff/.test(hayImg + " " + rowText)) {
+      counts.large = 1;
+      counts.detectedRealAttack = 1;
+      return counts;
+    }
+
+    if (/attack_medium|ataque m[ée]dio|medium attack|mittlerer/.test(hayImg + " " + rowText)) {
+      counts.medium = 1;
+      counts.detectedRealAttack = 1;
+      return counts;
+    }
+
+    if (/attack_small|ataque pequeno|small attack|kleiner angriff/.test(hayImg + " " + rowText)) {
+      counts.small = 1;
+      counts.detectedRealAttack = 1;
+      return counts;
+    }
+
+    if (/graphic\/command\/attack|graphic\/unit\/att|\/att\.webp|\/attack\.png/.test(hayImg)) {
+      counts.unknown = 1;
+      return counts;
+    }
+
+    counts.unknown = 1;
 
     return counts;
+  }
+
+  function classifyIncomingCommandRow(row, targetCoord) {
+    const rowTextRaw = row.innerText || row.textContent || "";
+    const rowText = rowTextRaw.toLowerCase();
+    const rowHtml = (row.innerHTML || "").toLowerCase();
+
+    if (shouldIgnoreFarmOrReturnRow(rowText, rowHtml)) {
+      return {
+        ignored: true,
+        ignoreReason: "farm_or_own_command"
+      };
+    }
+
+    const originCoord = extractOriginCoordFromIncomingRow(
+      rowTextRaw,
+      row.innerHTML || "",
+      targetCoord
+    );
+
+    if (originCoord && isOwnCoord(originCoord)) {
+      return {
+        ignored: true,
+        ignoreReason: "own_origin",
+        originCoord: originCoord
+      };
+    }
+
+    const counts = buildIncomingCommandCounts(row);
+
+    return {
+      ignored: false,
+      originCoord: originCoord,
+      counts: counts,
+      type: getPrimaryAttackType(counts)
+    };
   }
 
   function getPrimaryAttackType(counts) {
@@ -796,41 +938,41 @@
     const targetKey = keyOf(targetCoord);
     const text = String(rowText || "");
     const html = String(rowHtml || "");
+
+    const originSegment = text.match(/origin[\s\S]{0,160}/i);
+
+    if (originSegment) {
+      const parenCoord = originSegment[0].match(/\(\s*(\d{3})\s*\|\s*(\d{3})\s*\)/);
+
+      if (parenCoord) {
+        const coord = parenCoord[1] + "|" + parenCoord[2];
+
+        if (keyOf(coord) !== targetKey) {
+          return coord;
+        }
+      }
+
+      const inlineCoord = originSegment[0].match(/(\d{3})\s*\|\s*(\d{3})/);
+
+      if (inlineCoord) {
+        const coord = inlineCoord[1] + "|" + inlineCoord[2];
+
+        if (keyOf(coord) !== targetKey) {
+          return coord;
+        }
+      }
+    }
+
     const found = [];
-
-    function pushCoord(x, y) {
-      const coord = x + "|" + y;
-
-      if (keyOf(coord) !== targetKey) {
-        found.push(coord);
-      }
-    }
-
-    const originPatterns = [
-      /origin[^(\[]*\(\s*(\d{3})\s*\|\s*(\d{3})\s*\)/gi,
-      /origin[^\d]{0,40}(\d{3})\s*\|\s*(\d{3})/gi,
-      /herkunft[^(\[]*\(\s*(\d{3})\s*\|\s*(\d{3})\s*\)/gi
-    ];
-
-    originPatterns.forEach(function (pattern) {
-      let match;
-
-      pattern.lastIndex = 0;
-
-      while ((match = pattern.exec(text)) !== null) {
-        pushCoord(match[1], match[2]);
-      }
-    });
-
-    if (found.length) {
-      return found[0];
-    }
-
     const coordPattern = /(\d{3})\s*\|\s*(\d{3})/g;
     let coordMatch;
 
     while ((coordMatch = coordPattern.exec(text)) !== null) {
-      pushCoord(coordMatch[1], coordMatch[2]);
+      const coord = coordMatch[1] + "|" + coordMatch[2];
+
+      if (keyOf(coord) !== targetKey) {
+        found.push(coord);
+      }
     }
 
     const linkDoc = document.createElement("div");
@@ -838,23 +980,21 @@
     linkDoc.innerHTML = html;
 
     linkDoc.querySelectorAll("a").forEach(function (link) {
-      const linkText = link.textContent || "";
-      const href = link.getAttribute("href") || "";
-      const combined = linkText + " " + href;
-      let linkCoordMatch;
+      const combined = (link.textContent || "") + " " + (link.getAttribute("href") || "");
+      let linkMatch;
 
       coordPattern.lastIndex = 0;
 
-      while ((linkCoordMatch = coordPattern.exec(combined)) !== null) {
-        pushCoord(linkCoordMatch[1], linkCoordMatch[2]);
+      while ((linkMatch = coordPattern.exec(combined)) !== null) {
+        const coord = linkMatch[1] + "|" + linkMatch[2];
+
+        if (keyOf(coord) !== targetKey) {
+          found.push(coord);
+        }
       }
     });
 
-    if (found.length === 1) {
-      return found[0];
-    }
-
-    if (found.length > 1) {
+    if (found.length) {
       return found[0];
     }
 
@@ -862,26 +1002,32 @@
   }
 
   function findIncomingAttacksTable(doc) {
-    const incomingLabels = /chegando|incoming|ankommend|arriv/i;
     let targetTable = null;
+    const headerElements = doc.querySelectorAll("h2, h3, h4, caption, th");
 
-    doc.querySelectorAll("h2, h3, h4, caption, th, td, span").forEach(function (el) {
-      if (targetTable || !incomingLabels.test(el.textContent || "")) {
+    headerElements.forEach(function (el) {
+      if (targetTable) {
+        return;
+      }
+
+      const label = (el.textContent || "").trim();
+
+      if (!isIncomingChegandoLabel(label)) {
         return;
       }
 
       let table = el.closest("table");
 
-      if (!table) {
-        let node = el;
+      if (!table && /^H[234]$/i.test(el.tagName)) {
+        let sibling = el.nextElementSibling;
 
-        for (let i = 0; i < 4 && node && !table; i++) {
-          if (node.nextElementSibling && node.nextElementSibling.tagName === "TABLE") {
-            table = node.nextElementSibling;
+        while (sibling && !table) {
+          if (sibling.tagName === "TABLE") {
+            table = sibling;
             break;
           }
 
-          node = node.parentElement;
+          sibling = sibling.nextElementSibling;
         }
       }
 
@@ -891,49 +1037,42 @@
     });
 
     if (!targetTable) {
-      targetTable =
-        doc.querySelector("#commands_incoming_table") ||
-        doc.querySelector("table.incoming") ||
-        doc.querySelector("table#show_units");
-    }
-
-    if (!targetTable) {
-      doc.querySelectorAll("table").forEach(function (table) {
-        if (targetTable) {
-          return;
-        }
-
-        let hasCommand = false;
-
-        table.querySelectorAll("tr").forEach(function (row) {
-          if (hasCommand) {
-            return;
-          }
-
-          if (isIncomingCommandRow(row)) {
-            hasCommand = true;
-          }
-        });
-
-        if (hasCommand) {
-          targetTable = table;
-        }
-      });
+      targetTable = doc.querySelector("#commands_incoming_table");
     }
 
     return targetTable;
   }
 
+  function getIncomingCommandRows(table) {
+    const rows = [];
+
+    if (!table) {
+      return rows;
+    }
+
+    table.querySelectorAll("tr").forEach(function (row) {
+      if (isIncomingCommandRow(row)) {
+        rows.push(row);
+      }
+    });
+
+    return rows;
+  }
+
   function parseIncomingAttacksFromHtml(html, targetCoord) {
+    const emptyResult = {
+      counts: emptyAttackCounts(),
+      sources: []
+    };
+
     if (!html || typeof html !== "string") {
-      return null;
+      return emptyResult;
     }
 
     const doc = document.createElement("div");
 
     doc.innerHTML = html;
 
-    const pageText = (doc.textContent || "").toLowerCase();
     const table = findIncomingAttacksTable(doc);
     const result = {
       counts: emptyAttackCounts(),
@@ -941,41 +1080,62 @@
     };
 
     if (!table) {
-      if (/chegando|incoming|ankommend/.test(pageText)) {
-        return result;
+      if (DEBUG_ATTACK_PARSER && targetCoord) {
+        console.log("[AttackParser]", targetCoord, {
+          incomingRows: 0,
+          attackData: emptyResult.counts,
+          rowsText: [],
+          note: "tabela Chegando nao encontrada"
+        });
       }
 
-      return null;
+      return emptyResult;
     }
 
-    table.querySelectorAll("tr").forEach(function (row) {
-      if (row.querySelector("th")) {
+    const rows = getIncomingCommandRows(table);
+    let ignoredRows = 0;
+
+    rows.forEach(function (row) {
+      const rowText = (row.innerText || row.textContent || "").trim();
+      const classified = classifyIncomingCommandRow(row, targetCoord);
+
+      if (DEBUG_ATTACK_PARSER && targetCoord) {
+        console.log("[AttackParserRow]", {
+          targetCoord: targetCoord,
+          rowText: rowText,
+          originCoord: classified.originCoord || null,
+          isOwnOrigin: classified.originCoord ? isOwnCoord(classified.originCoord) : false,
+          ignored: !!classified.ignored,
+          ignoreReason: classified.ignoreReason || null,
+          type: classified.type || null
+        });
+      }
+
+      if (!classified || classified.ignored) {
+        ignoredRows += 1;
         return;
       }
 
-      if (!isIncomingCommandRow(row)) {
-        return;
-      }
+      mergeAttackRow(result.counts, classified.counts);
 
-      const rowCounts = classifyAttackRow(row);
-
-      mergeAttackRow(result.counts, rowCounts);
-
-      if (targetCoord) {
-        const originCoord = extractOriginCoordFromIncomingRow(
-          row.textContent || "",
-          row.innerHTML || "",
-          targetCoord
-        );
-
-        if (originCoord) {
-          result.sources.push({
-            originCoord: originCoord,
-            attackType: getPrimaryAttackType(rowCounts)
-          });
-        }
+      if (classified.originCoord && !isOwnCoord(classified.originCoord)) {
+        result.sources.push({
+          originCoord: classified.originCoord,
+          attackType: classified.type
+        });
       }
     });
+
+    if (DEBUG_ATTACK_PARSER && targetCoord) {
+      console.log("[AttackParser]", targetCoord, {
+        incomingRows: rows.length,
+        ignoredRows: ignoredRows,
+        attackData: result.counts,
+        rowsText: rows.map(function (row) {
+          return (row.innerText || row.textContent || "").trim();
+        })
+      });
+    }
 
     return result;
   }
@@ -1028,7 +1188,11 @@
   }
 
   function registerAttackerSource(originCoord, targetCoord, attackType) {
-    if (!originCoord) {
+    if (!originCoord || isOwnCoord(originCoord)) {
+      return;
+    }
+
+    if (attackType === "ignored") {
       return;
     }
 
@@ -1178,6 +1342,11 @@
     const notDetectedByTower = Number(attackData.notDetectedByTower || 0);
 
     const realAttacks = large + medium + small + noble;
+    const total = Number(attackData.total || 0);
+
+    if (scout > 0 && scout === total && realAttacks === 0 && unknown === 0 && towerPending === 0) {
+      return "scout";
+    }
 
     if (noble > 0) {
       return "critico";
@@ -1203,7 +1372,7 @@
       ? Number(defenseData.ownFull || 0) + Number(defenseData.supportFull || 0)
       : null;
 
-    if (totalDefense != null) {
+    if (totalDefense != null && realAttacks > 0) {
       const attackWeight =
         large +
         medium * 0.5 +
