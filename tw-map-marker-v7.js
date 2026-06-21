@@ -75,7 +75,8 @@
   let attackerSourceResults = {};
 
   const ATTACKERS_GROUP_ID = "system_attackers";
-  const ATTACK_ALL_OWN = "__all_own__";
+  const ALL_OWN = "__all_own__";
+  const ATTACK_ALL_OWN = ALL_OWN;
   const DEBUG_ATTACK_PARSER = true;
 
   const ATTACK_RISK_COLORS = {
@@ -899,6 +900,24 @@
     }
 
     return tryNext(0);
+  }
+
+  async function getVillageDefenseDataByVillageRef(item) {
+    const villageId = String(item.villageId || item.id || "");
+
+    if (!villageId) {
+      return null;
+    }
+
+    const data = await getVillageDefenseData({ id: villageId });
+
+    if (!data) {
+      return null;
+    }
+
+    data.coord = item.coord || null;
+
+    return data;
   }
 
   function emptyAttackCounts() {
@@ -1778,6 +1797,7 @@
     });
 
     refreshAttackTargetSelect();
+    refreshDefenseGroupSelect();
   }
 
   function processIncomingAttackSources(targetCoord, parsed) {
@@ -2172,6 +2192,7 @@
 
   function clearAllDefense() {
     defenseResults = {};
+    clearDefenseOverlays();
     draw();
     setDefenseStatus("Defesa limpa.");
   }
@@ -2236,7 +2257,7 @@
 
     const allOpt = document.createElement("option");
 
-    allOpt.value = ATTACK_ALL_OWN;
+    allOpt.value = ALL_OWN;
     allOpt.textContent = "Todas as aldeias próprias";
     select.appendChild(allOpt);
 
@@ -2252,10 +2273,10 @@
       select.appendChild(opt);
     });
 
-    if (currentValue && (currentValue === ATTACK_ALL_OWN || groups[currentValue])) {
+    if (currentValue && (currentValue === ALL_OWN || groups[currentValue])) {
       select.value = currentValue;
     } else {
-      select.value = ATTACK_ALL_OWN;
+      select.value = ALL_OWN;
     }
   }
 
@@ -2362,9 +2383,9 @@
     }
 
     const select = document.getElementById("twm_attack_target_select");
-    const value = select ? select.value : ATTACK_ALL_OWN;
+    const value = select ? select.value : ALL_OWN;
 
-    if (value === ATTACK_ALL_OWN) {
+    if (value === ALL_OWN) {
       await mapAttacksForAllOwnVillages();
       return;
     }
@@ -2638,7 +2659,7 @@
 
   function updateDefenseButtons() {
     const cancelBtn = document.getElementById("twm_cancel_defense");
-    const mapBtn = document.getElementById("twm_map_group_defense");
+    const mapBtn = document.getElementById("twm_map_defense");
 
     if (cancelBtn) {
       cancelBtn.disabled = !defenseMappingInProgress;
@@ -2660,18 +2681,17 @@
 
     select.innerHTML = "";
 
-    const groupEntries = Object.values(groups);
+    const allOpt = document.createElement("option");
 
-    if (!groupEntries.length) {
-      const opt = document.createElement("option");
+    allOpt.value = ALL_OWN;
+    allOpt.textContent = "Todas as aldeias próprias";
+    select.appendChild(allOpt);
 
-      opt.value = "";
-      opt.textContent = "Nenhum grupo";
-      select.appendChild(opt);
-      return;
-    }
+    Object.values(groups).forEach(function (group) {
+      if (group.systemType === "attackers") {
+        return;
+      }
 
-    groupEntries.forEach(function (group) {
       const opt = document.createElement("option");
 
       opt.value = group.id;
@@ -2679,10 +2699,10 @@
       select.appendChild(opt);
     });
 
-    if (currentValue && groups[currentValue]) {
+    if (currentValue && (currentValue === ALL_OWN || groups[currentValue])) {
       select.value = currentValue;
-    } else if (activeGroupId && groups[activeGroupId]) {
-      select.value = activeGroupId;
+    } else {
+      select.value = ALL_OWN;
     }
   }
 
@@ -2790,22 +2810,134 @@
     return delay(ms);
   }
 
-  async function mapDefenseForSelectedGroup() {
+  async function mapDefenseForSelectedTarget() {
     if (defenseMappingInProgress) {
       setDefenseStatus("Mapeamento de defesa já em andamento.", true);
       return;
     }
 
     const select = document.getElementById("twm_defense_group_select");
-    const groupId = select ? select.value : "";
-    const group = groupId ? groups[groupId] : null;
+    const value = select ? select.value : ALL_OWN;
 
-    if (!group) {
-      setDefenseStatus("Selecione um grupo para mapear defesa.", true);
+    if (value === ALL_OWN) {
+      await mapDefenseForAllOwnVillages();
+      return;
+    }
+
+    const group = groups[value];
+
+    if (!group || group.systemType === "attackers") {
+      setDefenseStatus("Selecione um grupo ou Todas as aldeias próprias.", true);
       return;
     }
 
     await mapDefenseForGroup(group);
+  }
+
+  async function mapDefenseForAllOwnVillages() {
+    const ownVillages = await getAllOwnVillagesForDefenseMapping();
+
+    if (!ownVillages.length) {
+      setDefenseStatus("Nenhuma aldeia própria encontrada para mapear defesa.", true);
+      return;
+    }
+
+    defenseMappingCancelled = false;
+    defenseMappingInProgress = true;
+    updateDefenseButtons();
+    w.__twm_defense_cancel = cancelDefenseMapping;
+
+    let ok = 0;
+    let failed = 0;
+
+    setDefenseStatus("Mapeando defesa em todas as aldeias próprias...");
+
+    for (let i = 0; i < ownVillages.length; i++) {
+      if (defenseMappingCancelled) {
+        break;
+      }
+
+      const item = ownVillages[i];
+
+      try {
+        const data = await getVillageDefenseDataByVillageRef(item);
+
+        if (!data || !canSeparateDefenseData(data)) {
+          failed++;
+          setDefenseStatus(
+            "Mapeando defesa " +
+            (i + 1) +
+            "/" +
+            ownVillages.length +
+            " | sem dados separados"
+          );
+          await sleep(250);
+          continue;
+        }
+
+        const result = calculateDefenseFulls(data);
+
+        if (!result || result.ownFull == null || result.supportFull == null) {
+          failed++;
+          await sleep(250);
+          continue;
+        }
+
+        const coord = item.coord || data.coord;
+
+        if (!coord) {
+          failed++;
+          await sleep(250);
+          continue;
+        }
+
+        defenseResults[coord] = result;
+        ok++;
+
+        draw();
+
+        setDefenseStatus(
+          "Mapeando defesa " +
+          (i + 1) +
+          "/" +
+          ownVillages.length +
+          " | OK: " +
+          coord
+        );
+
+        if (defenseMappingCancelled) {
+          break;
+        }
+
+        await sleep(DEFENSE_FETCH_DELAY);
+      } catch (err) {
+        failed++;
+        console.error("Erro ao mapear defesa da aldeia própria:", item, err);
+      }
+    }
+
+    defenseMappingInProgress = false;
+    w.__twm_defense_cancel = null;
+    w.__twm_defense_mapping_timer = null;
+    updateDefenseButtons();
+    updateDefenseInfo();
+    draw();
+
+    if (defenseMappingCancelled) {
+      setDefenseStatus(
+        "Mapeamento de defesa cancelado. OK: " +
+        ok +
+        " | Falhas: " +
+        failed
+      );
+    } else {
+      setDefenseStatus(
+        "Mapeamento de defesa concluído. OK: " +
+        ok +
+        " | Falhas: " +
+        failed
+      );
+    }
   }
 
   async function mapDefenseForGroup(group) {
@@ -2838,19 +2970,22 @@
       }
 
       const coord = coords[i];
-      const village = w.TWMap.villages[keyOf(coord)];
+      const villageId = findVillageIdByCoord(coord);
 
-      if (!village || !village.id) {
+      if (!villageId) {
         skipped++;
         setDefenseStatus(
           "Mapeando " + group.name + " " + (i + 1) + "/" + coords.length +
-          " | fora da área visível: " + coord
+          " | sem villageId: " + coord
         );
         continue;
       }
 
       try {
-        const data = await getVillageDefenseData(village);
+        const data = await getVillageDefenseDataByVillageRef({
+          villageId: villageId,
+          coord: coord
+        });
 
         if (defenseMappingCancelled) {
           break;
@@ -3350,7 +3485,7 @@
           '<label style="display:block;margin-bottom:4px;font-size:11px;">Calcular defesa: ' +
             '<select id="twm_defense_group_select" style="max-width:180px;margin-left:2px;"></select>' +
           "</label>" +
-          '<button id="twm_map_group_defense">Mapear defesa do grupo</button> ' +
+          '<button id="twm_map_defense">Mapear defesa</button> ' +
           '<button id="twm_cancel_defense" disabled>Cancelar mapeamento</button> ' +
           '<button id="twm_clear_defense">Limpar defesa</button>' +
           '<div id="twm_defense_legend" style="margin-top:5px;font-size:11px;line-height:14px;color:#333;">' +
@@ -3443,8 +3578,8 @@
       cancelDefenseMapping();
     };
 
-    document.getElementById("twm_map_group_defense").onclick = function () {
-      mapDefenseForSelectedGroup();
+    document.getElementById("twm_map_defense").onclick = function () {
+      mapDefenseForSelectedTarget();
     };
 
     document.getElementById("twm_clear_defense").onclick = function () {
