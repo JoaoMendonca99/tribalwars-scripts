@@ -31,35 +31,9 @@
   }
 
   let clickMode = false;
-  let activeGroupId = "atk";
-  let groupIndex = 0;
+  let activeGroupId = null;
 
-  const groups = {
-    atk: {
-      id: "atk",
-      name: "Atacando",
-      color: "#ff0000",
-      text: "",
-      icon: "axe",
-      coords: {}
-    },
-    def: {
-      id: "def",
-      name: "Defendendo",
-      color: "#004cff",
-      text: "",
-      icon: "spear",
-      coords: {}
-    },
-    nobre: {
-      id: "nobre",
-      name: "Nobre",
-      color: "#8a00ff",
-      text: "",
-      icon: "snob",
-      coords: {}
-    }
-  };
+  const groups = {};
 
   const ICON_PRESETS = [
     { value: "", label: "Sem ícone" },
@@ -97,6 +71,19 @@
       }
       panel.style.zIndex = "2147483647";
     });
+  }
+
+  function getNextPanelPosition(index) {
+    const startLeft = 20;
+    const startTop = 160;
+    const gapX = 360;
+    const gapY = 260;
+    const cols = 3;
+
+    return {
+      left: startLeft + (index % cols) * gapX,
+      top: startTop + Math.floor(index / cols) * gapY
+    };
   }
 
   function keyOf(coord) {
@@ -490,9 +477,8 @@
         coords: {}
       };
 
-      activeGroupId = id;
       createGroupPanel(groups[id]);
-      draw();
+      setActiveGroup(id);
     };
 
     document.getElementById("twm_click_mode").onclick = function () {
@@ -554,21 +540,18 @@
   }
 
   function createGroupPanel(group) {
-    groupIndex += 1;
-
     const panel = document.createElement("div");
+    const panelIndex = document.querySelectorAll(".twm_panel").length;
+    const pos = getNextPanelPosition(panelIndex);
 
     panel.id = "twm_panel_" + group.id;
     panel.className = "twm_panel";
     panel.dataset.group = group.id;
 
-    const top = 170 + groupIndex * 34;
-    const right = 18 + (groupIndex % 2) * 355;
-
     panel.style.cssText =
       "position:fixed;" +
-      "right:" + right + "px;" +
-      "top:" + top + "px;" +
+      "left:" + pos.left + "px;" +
+      "top:" + pos.top + "px;" +
       "z-index:2147483647;" +
       "background:#f4e4bc;" +
       "border:2px solid #7d510f;" +
@@ -581,9 +564,9 @@
       '<div class="twm_head" style="background:#d7bd82;padding:6px;font-weight:bold;">' +
         '<span class="twm_title"></span>' +
         '<button class="twm_del_group" style="float:right;margin-left:4px">Excluir</button>' +
-        '<button class="twm_set_active" style="float:right">Editar</button>' +
+        '<button class="twm_set_active" style="float:right">Selecionar</button>' +
       "</div>" +
-      '<div style="padding:7px">' +
+      '<div class="twm_body" style="padding:7px">' +
         'Nome: <input class="twm_name" style="width:115px"> ' +
         'Cor: <input class="twm_color" type="color"> ' +
         'Texto: <input class="twm_text_symbol" maxlength="6" style="width:42px">' +
@@ -681,11 +664,6 @@
     };
 
     panel.querySelector(".twm_del_group").onclick = function () {
-      if (Object.keys(groups).length <= 1) {
-        alert("Precisa ter pelo menos 1 grupo.");
-        return;
-      }
-
       if (!confirm('Excluir grupo "' + group.name + '"?')) {
         return;
       }
@@ -694,7 +672,8 @@
       panel.remove();
 
       if (activeGroupId === group.id) {
-        activeGroupId = Object.keys(groups)[0];
+        const remaining = Object.keys(groups);
+        activeGroupId = remaining.length ? remaining[0] : null;
       }
 
       draw();
@@ -712,8 +691,10 @@
 
     const isActive = group.id === activeGroupId;
     const count = Object.keys(group.coords || {}).length;
+    const title = panel.querySelector(".twm_title");
+    const body = panel.querySelector(".twm_body");
 
-    panel.querySelector(".twm_title").textContent =
+    title.textContent =
       (isActive ? "EDITANDO: " : "Grupo: ") + group.name + " (" + count + ")";
 
     panel.querySelector(".twm_info").textContent =
@@ -721,14 +702,17 @@
 
     panel.querySelector(".twm_coords").value = coordsToText(group);
 
+    panel.style.opacity = "1";
+    panel.style.filter = "none";
+
     if (isActive) {
-      panel.style.opacity = "1";
-      panel.style.filter = "brightness(1)";
       panel.style.borderColor = group.color;
+      body.style.opacity = "1";
+      body.style.filter = "brightness(1)";
     } else {
-      panel.style.opacity = "0.58";
-      panel.style.filter = "brightness(0.72)";
       panel.style.borderColor = "#7d510f";
+      body.style.opacity = "0.55";
+      body.style.filter = "brightness(0.75)";
     }
   }
 
@@ -740,11 +724,11 @@
     const info = document.getElementById("twm_main_info");
 
     if (info) {
-      const active = groups[activeGroupId];
+      const active = activeGroupId ? groups[activeGroupId] : null;
 
       info.textContent =
         "Editando: " +
-        (active ? active.name : "-") +
+        (active ? active.name : "nenhum grupo") +
         " | Total geral: " +
         totalAll();
     }
@@ -756,12 +740,6 @@
     }
 
     if (event.target.closest(".twm_panel, .twm_main_panel")) {
-      return;
-    }
-
-    const active = groups[activeGroupId];
-
-    if (!active) {
       return;
     }
 
@@ -777,6 +755,13 @@
     }
 
     if (!coord || !w.TWMap.villages[keyOf(coord)]) {
+      return;
+    }
+
+    const active = activeGroupId ? groups[activeGroupId] : null;
+
+    if (!active) {
+      alert("Crie ou selecione um grupo antes de marcar aldeias.");
       return;
     }
 
@@ -805,9 +790,6 @@
   document.addEventListener("fullscreenchange", w.__twm_fullscreen_listener);
 
   createMainPanel();
-  Object.values(groups).forEach(function (group) {
-    createGroupPanel(group);
-  });
 
   w.__twm_interval = setInterval(draw, 800);
 
