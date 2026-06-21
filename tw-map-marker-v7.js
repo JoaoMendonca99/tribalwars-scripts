@@ -10,9 +10,14 @@
     return;
   }
 
-  document.querySelectorAll(".twm_mark, .twm_panel, .twm_main_panel").forEach(function (el) {
+  document.querySelectorAll(".twm_mark, .twm_defense_mark, .twm_panel, .twm_main_panel").forEach(function (el) {
     el.remove();
   });
+
+  if (w.__twm_defense_cancel) {
+    w.__twm_defense_cancel();
+    w.__twm_defense_cancel = null;
+  }
 
   if (w.__twm_interval) {
     clearInterval(w.__twm_interval);
@@ -29,11 +34,38 @@
     w.__twm_click_listener = null;
   }
 
+  if (w.__twm_defense_hover_listener) {
+    document.removeEventListener("mouseover", w.__twm_defense_hover_listener, true);
+    w.__twm_defense_hover_listener = null;
+  }
+
+  if (w.__twm_defense_mouseout_listener) {
+    document.removeEventListener("mouseout", w.__twm_defense_mouseout_listener, true);
+    w.__twm_defense_mouseout_listener = null;
+  }
+
+  if (w.__twm_defense_capture_timer) {
+    clearTimeout(w.__twm_defense_capture_timer);
+    w.__twm_defense_capture_timer = null;
+  }
+
   let clickMode = false;
   let activeGroupId = null;
   let groupIndex = 0;
 
   const groups = {};
+
+  const DEFENSE_UNITS = ["spear", "sword", "archer", "heavy"];
+  const DEFENSE_FETCH_DELAY = 280;
+
+  let defenseResults = {};
+  let defenseMapping = false;
+
+  let captureDefenseMode = false;
+  let captureDefenseLastVillageId = null;
+  let captureDefenseTimer = null;
+
+  const CAPTURE_DEFENSE_DELAY = 350;
 
   const ICON_PRESETS = [
     { label: "Sem ícone", value: "", src: "" },
@@ -270,6 +302,681 @@
     });
   }
 
+  function emptyDefenseUnits() {
+    return {
+      spear: 0,
+      sword: 0,
+      archer: 0,
+      heavy: 0
+    };
+  }
+
+  function getPlayerId() {
+    return w.game_data && w.game_data.player ? w.game_data.player.id : null;
+  }
+
+  function parseIntSafe(value) {
+    const n = parseInt(String(value || "").replace(/\./g, "").replace(/\s/g, ""), 10);
+    return isNaN(n) ? 0 : n;
+  }
+
+  function addDefenseUnits(target, source) {
+    DEFENSE_UNITS.forEach(function (unit) {
+      target[unit] += parseIntSafe(source && source[unit]);
+    });
+    return target;
+  }
+
+  function getVisibleVillages() {
+    const list = [];
+
+    Object.entries(w.TWMap.villages || {}).forEach(function (entry) {
+      const key = entry[0];
+      const village = entry[1];
+
+      if (!village || !village.id) {
+        return;
+      }
+
+      const img = document.getElementById("map_village_" + village.id);
+
+      if (!img) {
+        return;
+      }
+
+      list.push({
+        village: village,
+        coord: coordText(key),
+        key: key,
+        img: img
+      });
+    });
+
+    return list;
+  }
+
+  function isOwnVillage(village) {
+    const playerId = getPlayerId();
+
+    if (!playerId || !village) {
+      return false;
+    }
+
+    const pid = String(playerId);
+
+    if (
+      String(village.player_id) === pid ||
+      String(village.player) === pid ||
+      String(village.owner_id) === pid
+    ) {
+      return true;
+    }
+
+    if (village.owner) {
+      if (String(village.owner.id) === pid || String(village.owner) === pid) {
+        return true;
+      }
+    }
+
+    const gdVillages = w.game_data && w.game_data.villages;
+
+    if (gdVillages && typeof gdVillages === "object" && !Array.isArray(gdVillages)) {
+      if (gdVillages[village.id] || gdVillages[String(village.id)]) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function parseUnitsFromUnitItems(root) {
+    const units = emptyDefenseUnits();
+
+    root.querySelectorAll(".unit-item, td.unit-item, [class*='unit-item-']").forEach(function (cell) {
+      let unit = cell.id || cell.getAttribute("data-unit") || "";
+
+      if (!unit && cell.className) {
+        const match = String(cell.className).match(/unit-item-(\w+)/);
+        if (match) {
+          unit = match[1];
+        }
+      }
+
+      if (DEFENSE_UNITS.indexOf(unit) === -1) {
+        return;
+      }
+
+      const input = cell.querySelector("input");
+      const amountText = input ? input.value : cell.textContent;
+      units[unit] += parseIntSafe(amountText);
+    });
+
+    return units;
+  }
+
+  function parsePlaceWithdrawHtml(html) {
+    const doc = document.createElement("div");
+    doc.innerHTML = html;
+
+    const ownUnits = emptyDefenseUnits();
+    const supportUnits = emptyDefenseUnits();
+    const table = doc.querySelector("#withdraw_selected_units_village_info");
+
+    if (!table) {
+      return null;
+    }
+
+    const rows = table.querySelectorAll("tbody tr");
+
+    rows.forEach(function (row, index) {
+      if (index === 0) {
+        return;
+      }
+
+      const hasPlayerLink = row.querySelector("td:first-child a");
+      const rowUnits = parseUnitsFromUnitItems(row);
+
+      if (hasPlayerLink) {
+        addDefenseUnits(supportUnits, rowUnits);
+      } else if (Object.values(rowUnits).some(function (v) { return v > 0; })) {
+        addDefenseUnits(ownUnits, rowUnits);
+      }
+    });
+
+    return {
+      ownUnits: ownUnits,
+      supportUnits: supportUnits
+    };
+  }
+
+  function parseInfoVillageHtml(html) {
+    const doc = document.createElement("div");
+    doc.innerHTML = html;
+
+    const ownUnits = emptyDefenseUnits();
+    const supportUnits = emptyDefenseUnits();
+    let current = ownUnits;
+    let found = false;
+
+    doc.querySelectorAll("table").forEach(function (table) {
+      const heading = (table.previousElementSibling && table.previousElementSibling.textContent) || "";
+      const caption = (table.querySelector("caption") && table.querySelector("caption").textContent) || "";
+      const label = (heading + " " + caption).toLowerCase();
+
+      if (/support|apoio|terceir|ally|aliad|foreign|fremd|steun/.test(label)) {
+        current = supportUnits;
+      } else if (/own|pr[oó]pri|home|eigen|casa|presentes/.test(label)) {
+        current = ownUnits;
+      }
+
+      const tableUnits = parseUnitsFromUnitItems(table);
+
+      if (Object.values(tableUnits).some(function (v) { return v > 0; })) {
+        addDefenseUnits(current, tableUnits);
+        found = true;
+      }
+    });
+
+    if (!found) {
+      return null;
+    }
+
+    return {
+      ownUnits: ownUnits,
+      supportUnits: supportUnits
+    };
+  }
+
+  function parseMapInfoPayload(payload) {
+    if (!payload) {
+      return null;
+    }
+
+    if (payload.error) {
+      return null;
+    }
+
+    if (payload.ownUnits && payload.supportUnits) {
+      return {
+        ownUnits: addDefenseUnits(emptyDefenseUnits(), payload.ownUnits),
+        supportUnits: addDefenseUnits(emptyDefenseUnits(), payload.supportUnits)
+      };
+    }
+
+    if (payload.units && typeof payload.units === "string") {
+      return null;
+    }
+
+    if (Array.isArray(payload.unit_groups)) {
+      const ownUnits = emptyDefenseUnits();
+      const supportUnits = emptyDefenseUnits();
+      const playerId = String(getPlayerId() || "");
+
+      payload.unit_groups.forEach(function (group) {
+        const target = String(group.player_id || group.owner_id || group.player) === playerId
+          ? ownUnits
+          : supportUnits;
+        addDefenseUnits(target, group.units || group);
+      });
+
+      return {
+        ownUnits: ownUnits,
+        supportUnits: supportUnits
+      };
+    }
+
+    if (payload.html) {
+      return parsePlaceWithdrawHtml(payload.html) || parseInfoVillageHtml(payload.html);
+    }
+
+    if (typeof payload === "string") {
+      return parsePlaceWithdrawHtml(payload) || parseInfoVillageHtml(payload);
+    }
+
+    return null;
+  }
+
+  function buildMapInfoUrl(villageId) {
+    if (w.TWMap && w.TWMap.urls && w.TWMap.urls.villagePopup) {
+      return w.TWMap.urls.villagePopup.replace(/__village__/g, villageId);
+    }
+
+    const sourceId = w.game_data && w.game_data.village ? w.game_data.village.id : villageId;
+    const base = (w.game_data && w.game_data.link_base_pure) || ("/game.php?village=" + sourceId + "&screen=");
+
+    return base + "overview&ajax=map_info&source=" + sourceId + "&village=" + villageId;
+  }
+
+  function buildPlaceWithdrawUrl(villageId) {
+    const base = (w.game_data && w.game_data.link_base_pure) || ("/game.php?village=" + villageId + "&screen=");
+
+    return base + "place&mode=withdraw&village=" + villageId;
+  }
+
+  function buildInfoVillageUrl(villageId) {
+    const sourceId = w.game_data && w.game_data.village ? w.game_data.village.id : villageId;
+    const base = (w.game_data && w.game_data.link_base_pure) || ("/game.php?village=" + sourceId + "&screen=");
+
+    return base + "info_village&id=" + villageId;
+  }
+
+  function fetchGameUrl(url) {
+    return new Promise(function (resolve, reject) {
+      if (w.$ && w.$.get) {
+        w.$.get(url).done(resolve).fail(reject);
+        return;
+      }
+
+      fetch(url, { credentials: "same-origin" })
+        .then(function (response) { return response.text(); })
+        .then(resolve)
+        .catch(reject);
+    });
+  }
+
+  function tryParseJson(text) {
+    try {
+      return JSON.parse(text);
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function getVillageDefenseData(village) {
+    const villageId = village.id;
+    const urls = [
+      buildPlaceWithdrawUrl(villageId),
+      buildMapInfoUrl(villageId),
+      buildInfoVillageUrl(villageId)
+    ];
+
+    function tryNext(index) {
+      if (index >= urls.length) {
+        return Promise.resolve(null);
+      }
+
+      return fetchGameUrl(urls[index]).then(function (response) {
+        const json = typeof response === "string" ? tryParseJson(response) : null;
+        const parsed = parseMapInfoPayload(json || response);
+
+        if (parsed) {
+          return parsed;
+        }
+
+        return tryNext(index + 1);
+      }).catch(function () {
+        return tryNext(index + 1);
+      });
+    }
+
+    return tryNext(0);
+  }
+
+  function calculateDefenseFulls(data) {
+    if (!data || !data.ownUnits || !data.supportUnits) {
+      return {
+        ownFull: null,
+        supportFull: null,
+        error: "Não foi possível separar tropas próprias e apoio"
+      };
+    }
+
+    function sumFull(units) {
+      return (
+        (units.spear || 0) / 12000 +
+        (units.sword || 0) / 12000 +
+        (units.archer || 0) / 12000 +
+        (units.heavy || 0) / 8000
+      );
+    }
+
+    const ownFullRaw = sumFull(data.ownUnits);
+    const supportFullRaw = sumFull(data.supportUnits);
+
+    return {
+      ownFull: Math.min(1, ownFullRaw),
+      supportFull: supportFullRaw,
+      ownUnits: data.ownUnits,
+      supportUnits: data.supportUnits
+    };
+  }
+
+  function formatDefenseNumber(value) {
+    const n = Math.round(Number(value) * 10) / 10;
+    return (n % 1 === 0 ? String(n.toFixed(0)) : String(n));
+  }
+
+  function clearDefenseOverlays() {
+    document.querySelectorAll(".twm_defense_mark").forEach(function (mark) {
+      mark.remove();
+    });
+  }
+
+  function drawDefenseOverlay(coord, result) {
+    const village = w.TWMap.villages[keyOf(coord)];
+
+    if (!village || !village.id || result.ownFull == null || result.supportFull == null) {
+      return;
+    }
+
+    defenseResults[coord] = result;
+
+    document.querySelectorAll(".twm_defense_mark").forEach(function (mark) {
+      if (mark.dataset.coord === coord) {
+        mark.remove();
+      }
+    });
+
+    const img = document.getElementById("map_village_" + village.id);
+
+    if (!img || !img.parentElement) {
+      return;
+    }
+
+    const parent = img.parentElement;
+
+    if (getComputedStyle(parent).position === "static") {
+      parent.style.position = "relative";
+    }
+
+    const box = document.createElement("div");
+
+    box.className = "twm_defense_mark";
+    box.dataset.coord = coord;
+    box.title = "Defesa " + coord + " | P: " + formatDefenseNumber(result.ownFull) + " | T: " + formatDefenseNumber(result.supportFull);
+
+    const left = img.style.left || img.offsetLeft + "px";
+    const top = img.style.top || img.offsetTop + "px";
+    const width = img.style.width || img.width + "px";
+    const height = img.style.height || img.height + "px";
+
+    let z = parseInt(img.style.zIndex || getComputedStyle(img).zIndex || 5, 10);
+
+    if (isNaN(z)) {
+      z = 5;
+    }
+
+    box.style.cssText =
+      "position:absolute;" +
+      "left:" + left + ";" +
+      "top:" + top + ";" +
+      "width:" + width + ";" +
+      "height:" + height + ";" +
+      "box-sizing:border-box;" +
+      "border:1px solid #1f4f9a;" +
+      "background:rgba(0,0,0,0.62);" +
+      "border-radius:3px;" +
+      "z-index:" + (z + 60) + ";" +
+      "pointer-events:none;" +
+      "display:flex;" +
+      "align-items:center;" +
+      "justify-content:center;" +
+      "overflow:hidden;" +
+      "color:#fff;" +
+      "font-weight:bold;" +
+      "font-size:9px;" +
+      "line-height:1.1;" +
+      "text-align:center;" +
+      "text-shadow:1px 1px 2px #000,-1px -1px 2px #000;" +
+      "padding:1px;";
+
+    box.innerHTML =
+      "P: " + formatDefenseNumber(result.ownFull) +
+      "<br>T: " + formatDefenseNumber(result.supportFull);
+
+    parent.appendChild(box);
+  }
+
+  function drawAllDefenseOverlays() {
+    clearDefenseOverlays();
+
+    Object.keys(defenseResults).forEach(function (coord) {
+      drawDefenseOverlay(coord, defenseResults[coord]);
+    });
+  }
+
+  function delay(ms) {
+    return new Promise(function (resolve) {
+      setTimeout(resolve, ms);
+    });
+  }
+
+  function mapVisibleDefense() {
+    if (defenseMapping) {
+      setStatus("Mapeamento de defesa já em andamento.", true);
+      return;
+    }
+
+    const visible = getVisibleVillages().filter(function (item) {
+      return isOwnVillage(item.village);
+    });
+
+    if (!visible.length) {
+      setStatus("Nenhuma aldeia própria visível no mapa.", true);
+      return;
+    }
+
+    defenseMapping = true;
+    let cancelled = false;
+
+    w.__twm_defense_cancel = function () {
+      cancelled = true;
+      defenseMapping = false;
+    };
+
+    setStatus("Mapeando defesa de " + visible.length + " aldeia(s)...");
+
+    (function process(index, stats) {
+      if (cancelled) {
+        defenseMapping = false;
+        setStatus("Mapeamento de defesa cancelado.");
+        return;
+      }
+
+      if (index >= visible.length) {
+        defenseMapping = false;
+        w.__twm_defense_cancel = null;
+        drawAllDefenseOverlays();
+        setStatus(stats.mapped + " aldeia(s) mapeada(s) com defesa.");
+        return;
+      }
+
+      const item = visible[index];
+
+      setStatus("Mapeando defesa " + (index + 1) + "/" + visible.length + ": " + item.coord + "...");
+
+      getVillageDefenseData(item.village).then(function (raw) {
+        if (cancelled) {
+          return;
+        }
+
+        if (raw) {
+          const result = calculateDefenseFulls(raw);
+
+          if (result.ownFull != null && result.supportFull != null) {
+            defenseResults[item.coord] = result;
+            stats.mapped += 1;
+            drawDefenseOverlay(item.coord, result);
+          }
+        }
+
+        return delay(DEFENSE_FETCH_DELAY);
+      }).catch(function () {
+        return delay(DEFENSE_FETCH_DELAY);
+      }).then(function () {
+        process(index + 1, stats);
+      });
+    })(0, { mapped: 0 });
+  }
+
+  function canSeparateDefenseData(data) {
+    return !!(data && data.ownUnits && data.supportUnits);
+  }
+
+  function getVisibleVillagePopupHtml() {
+    const candidates = [
+      "#tooltip",
+      ".tooltip",
+      ".popup",
+      ".village_popup",
+      ".map_popup",
+      "#map_popup",
+      ".ui-tooltip",
+      ".tw-tooltip"
+    ];
+
+    for (let i = 0; i < candidates.length; i++) {
+      const elements = Array.from(document.querySelectorAll(candidates[i]));
+
+      for (let j = 0; j < elements.length; j++) {
+        const el = elements[j];
+        const rect = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+
+        const visible =
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity || 1) !== 0;
+
+        if (visible && el.innerText && el.innerText.trim().length > 0) {
+          return el.innerHTML;
+        }
+      }
+    }
+
+    const keywords = /Pontos|Proprietário|Proprietario|Tropas|Points|Owner|Units|Aldeia|Village/i;
+    const all = Array.from(document.querySelectorAll("body *")).filter(function (el) {
+      const text = el.innerText || "";
+
+      if (!keywords.test(text)) {
+        return false;
+      }
+
+      const rect = el.getBoundingClientRect();
+      const style = getComputedStyle(el);
+
+      return (
+        rect.width > 100 &&
+        rect.height > 40 &&
+        style.display !== "none" &&
+        style.visibility !== "hidden"
+      );
+    });
+
+    if (all.length) {
+      all.sort(function (a, b) {
+        const areaA = a.getBoundingClientRect().width * a.getBoundingClientRect().height;
+        const areaB = b.getBoundingClientRect().width * b.getBoundingClientRect().height;
+        return areaB - areaA;
+      });
+
+      return all[0].innerHTML;
+    }
+
+    return "";
+  }
+
+  function getVillageDefenseDataFromPopupHtml(html) {
+    if (!html) {
+      return null;
+    }
+
+    const fromWithdraw = parsePlaceWithdrawHtml(html);
+
+    if (fromWithdraw) {
+      return fromWithdraw;
+    }
+
+    const json = tryParseJson(html);
+
+    if (json) {
+      const fromJson = parseMapInfoPayload(json);
+
+      if (fromJson) {
+        return fromJson;
+      }
+    }
+
+    const fromMap = parseMapInfoPayload(html);
+
+    if (fromMap) {
+      return fromMap;
+    }
+
+    const doc = document.createElement("div");
+    doc.innerHTML = html;
+    const text = (doc.textContent || "").toLowerCase();
+
+    if (/support|apoio|terceir|aliad|own|pr[oó]pri|presentes|eigen|steun|fremd/.test(text)) {
+      return parseInfoVillageHtml(html);
+    }
+
+    const units = parseUnitsFromUnitItems(doc);
+
+    if (Object.values(units).some(function (v) { return v > 0; })) {
+      return null;
+    }
+
+    return null;
+  }
+
+  function captureDefenseForVillage(coord, village) {
+    let data = null;
+    const popupHtml = getVisibleVillagePopupHtml();
+
+    if (popupHtml) {
+      data = getVillageDefenseDataFromPopupHtml(popupHtml);
+    }
+
+    function finishCapture(raw) {
+      if (!canSeparateDefenseData(raw)) {
+        setStatus("Não foi possível capturar defesa em " + coord + ".", true);
+        captureDefenseLastVillageId = null;
+        return;
+      }
+
+      const result = calculateDefenseFulls(raw);
+
+      if (!result || result.ownFull === null || result.supportFull === null) {
+        setStatus("Defesa incompleta em " + coord + ".", true);
+        captureDefenseLastVillageId = null;
+        return;
+      }
+
+      drawDefenseOverlay(coord, result);
+      setStatus(
+        "Defesa capturada em " + coord + ": P " +
+        formatDefenseNumber(result.ownFull) + " | T " +
+        formatDefenseNumber(result.supportFull)
+      );
+    }
+
+    if (canSeparateDefenseData(data)) {
+      finishCapture(data);
+      return;
+    }
+
+    getVillageDefenseData(village).then(function (raw) {
+      finishCapture(raw);
+    }).catch(function () {
+      setStatus("Não foi possível capturar defesa em " + coord + ".", true);
+      captureDefenseLastVillageId = null;
+    });
+  }
+
+  function updateCaptureDefenseButton() {
+    const btn = document.getElementById("twm_capture_defense");
+
+    if (!btn) {
+      return;
+    }
+
+    btn.textContent = "Capturar defesa: " + (captureDefenseMode ? "ON" : "OFF");
+    btn.style.fontWeight = captureDefenseMode ? "bold" : "normal";
+  }
+
   function getEffectiveIcon(group) {
     return String(group.icon || "").trim();
   }
@@ -448,6 +1155,7 @@
 
     movePanelsToHost();
     refreshAllPanels();
+    drawAllDefenseOverlays();
   }
 
   function totalAll() {
@@ -622,7 +1330,11 @@
       '<div style="padding:7px">' +
         '<button id="twm_new_group">Novo grupo</button> ' +
         '<button id="twm_click_mode">Modo clique: OFF</button> ' +
+        '<button id="twm_capture_defense">Capturar defesa: OFF</button> ' +
         '<button id="twm_clear_all">Limpar tudo</button>' +
+        "<br>" +
+        '<button id="twm_map_defense" style="margin-top:4px">Mapear defesa</button> ' +
+        '<button id="twm_clear_defense" style="margin-top:4px">Limpar defesa</button>' +
         '<div id="twm_main_info" style="margin-top:6px;font-size:11px"></div>' +
         '<div id="twm_status" style="margin-top:4px;color:#7a0000;font-size:11px;"></div>' +
       "</div>";
@@ -681,8 +1393,78 @@
       draw();
     };
 
+    document.getElementById("twm_capture_defense").onclick = function () {
+      captureDefenseMode = !captureDefenseMode;
+      updateCaptureDefenseButton();
+
+      if (captureDefenseMode) {
+        captureDefenseLastVillageId = null;
+        setStatus("Captura de defesa ativada. Passe o mouse sobre suas aldeias.");
+      } else {
+        if (captureDefenseTimer) {
+          clearTimeout(captureDefenseTimer);
+          captureDefenseTimer = null;
+        }
+
+        if (w.__twm_defense_capture_timer) {
+          clearTimeout(w.__twm_defense_capture_timer);
+          w.__twm_defense_capture_timer = null;
+        }
+
+        captureDefenseLastVillageId = null;
+        setStatus("Captura de defesa desativada.");
+      }
+    };
+
+    document.getElementById("twm_map_defense").onclick = function () {
+      mapVisibleDefense();
+    };
+
+    document.getElementById("twm_clear_defense").onclick = function () {
+      if (w.__twm_defense_cancel) {
+        w.__twm_defense_cancel();
+        w.__twm_defense_cancel = null;
+      }
+
+      defenseMapping = false;
+      defenseResults = {};
+      clearDefenseOverlays();
+      setStatus("Overlays de defesa removidos.");
+    };
+
     document.getElementById("twm_close_all").onclick = function () {
-      document.querySelectorAll(".twm_mark, .twm_panel, .twm_main_panel").forEach(function (el) {
+      if (w.__twm_defense_cancel) {
+        w.__twm_defense_cancel();
+        w.__twm_defense_cancel = null;
+      }
+
+      captureDefenseMode = false;
+      captureDefenseLastVillageId = null;
+
+      if (captureDefenseTimer) {
+        clearTimeout(captureDefenseTimer);
+        captureDefenseTimer = null;
+      }
+
+      if (w.__twm_defense_capture_timer) {
+        clearTimeout(w.__twm_defense_capture_timer);
+        w.__twm_defense_capture_timer = null;
+      }
+
+      if (w.__twm_defense_hover_listener) {
+        document.removeEventListener("mouseover", w.__twm_defense_hover_listener, true);
+        w.__twm_defense_hover_listener = null;
+      }
+
+      if (w.__twm_defense_mouseout_listener) {
+        document.removeEventListener("mouseout", w.__twm_defense_mouseout_listener, true);
+        w.__twm_defense_mouseout_listener = null;
+      }
+
+      defenseMapping = false;
+      defenseResults = {};
+
+      document.querySelectorAll(".twm_mark, .twm_defense_mark, .twm_panel, .twm_main_panel").forEach(function (el) {
         el.remove();
       });
 
@@ -1026,6 +1808,87 @@
   };
 
   document.addEventListener("click", w.__twm_click_listener, true);
+
+  w.__twm_defense_hover_listener = function (event) {
+    if (!captureDefenseMode) {
+      return;
+    }
+
+    if (event.target.closest(".twm_panel, .twm_main_panel")) {
+      return;
+    }
+
+    const img = event.target.closest('img[id^="map_village_"]');
+
+    if (!img) {
+      return;
+    }
+
+    const villageId = img.id.replace("map_village_", "");
+
+    if (captureDefenseLastVillageId === villageId) {
+      return;
+    }
+
+    const coord = findCoordByVillageId(villageId);
+
+    if (!coord || !w.TWMap.villages[keyOf(coord)]) {
+      return;
+    }
+
+    const village = w.TWMap.villages[keyOf(coord)];
+
+    if (!isOwnVillage(village)) {
+      return;
+    }
+
+    captureDefenseLastVillageId = villageId;
+
+    if (captureDefenseTimer) {
+      clearTimeout(captureDefenseTimer);
+    }
+
+    if (w.__twm_defense_capture_timer) {
+      clearTimeout(w.__twm_defense_capture_timer);
+    }
+
+    captureDefenseTimer = setTimeout(function () {
+      if (!captureDefenseMode) {
+        return;
+      }
+
+      captureDefenseForVillage(coord, village);
+    }, CAPTURE_DEFENSE_DELAY);
+
+    w.__twm_defense_capture_timer = captureDefenseTimer;
+  };
+
+  w.__twm_defense_mouseout_listener = function (event) {
+    if (!captureDefenseMode) {
+      return;
+    }
+
+    const img = event.target.closest('img[id^="map_village_"]');
+
+    if (!img) {
+      return;
+    }
+
+    const related = event.relatedTarget;
+
+    if (related && img.contains(related)) {
+      return;
+    }
+
+    const villageId = img.id.replace("map_village_", "");
+
+    if (captureDefenseLastVillageId === villageId) {
+      captureDefenseLastVillageId = null;
+    }
+  };
+
+  document.addEventListener("mouseover", w.__twm_defense_hover_listener, true);
+  document.addEventListener("mouseout", w.__twm_defense_mouseout_listener, true);
 
   w.__twm_fullscreen_listener = function () {
     setTimeout(function () {
