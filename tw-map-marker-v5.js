@@ -1,6 +1,9 @@
-/* Tribal Wars - Marcador visual de aldeias v6
-   Uso na barra de acesso rápido:
-   javascript:$.getScript('URL_DO_ARQUIVO/tw-map-marker-v6.js?v=1');
+/* Tribal Wars - Marcador visual de aldeias V7
+   V7:
+   - começa zerado toda vez
+   - janelas separadas por grupo
+   - grupo ativo normal, grupos inativos escuros
+   - ícones do próprio jogo
 */
 (function () {
   const w = window;
@@ -10,8 +13,7 @@
     return;
   }
 
-  document.getElementById("twm_panel")?.remove();
-  document.querySelectorAll(".twm_mark").forEach(e => e.remove());
+  document.querySelectorAll(".twm_mark,.twm_panel,.twm_main_panel").forEach(e => e.remove());
 
   if (w.__twm_interval) clearInterval(w.__twm_interval);
   if (w.__twm_fullscreen_listener) {
@@ -21,116 +23,36 @@
     document.removeEventListener("click", w.__twm_click_listener, true);
   }
 
-  const world = (w.game_data && w.game_data.world) || "world";
-  const K = "twm_visual_marker_v6_" + world;
-  const OLD = "twm_visual_marker_v5_" + world;
-
   let clickMode = false;
+  let activeGroupId = "atk";
+  let groupIndex = 0;
 
-  function defState() {
-    return {
-      active: "atk",
-      groups: {
-        atk: {
-          name: "Atacando",
-          color: "#ff0000",
-          symbol: "⚔",
-          icon: "/graphic/unit_map/axe.webp",
-          coords: {}
-        },
-        def: {
-          name: "Defendendo",
-          color: "#004cff",
-          symbol: "🛡",
-          icon: "/graphic/unit_map/spear.webp",
-          coords: {}
-        },
-        nobre: {
-          name: "Nobre",
-          color: "#8a00ff",
-          symbol: "♛",
-          icon: "/graphic/unit_map/snob.webp",
-          coords: {}
-        },
-        alvo: {
-          name: "Alvo futuro",
-          color: "#ffd000",
-          symbol: "★",
-          icon: "/graphic/unit_map/ram.webp",
-          coords: {}
-        },
-        ok: {
-          name: "Conferida",
-          color: "#00b050",
-          symbol: "✓",
-          icon: "",
-          coords: {}
-        },
-        perigo: {
-          name: "Perigo",
-          color: "#ff8c00",
-          symbol: "!",
-          icon: "/graphic/unit_map/spy.webp",
-          coords: {}
-        }
-      }
-    };
-  }
-
-  function cleanId(s) {
-    s = String(s || "grupo").replace(/[^a-zA-Z0-9]/g, "").slice(0, 18);
-    return s || ("g" + Date.now());
-  }
-
-  function importOld(state) {
-    let old = {};
-    try {
-      old = JSON.parse(localStorage.getItem(OLD) || "{}");
-    } catch (e) {
-      old = {};
+  const groups = {
+    atk: {
+      id: "atk",
+      name: "Atacando",
+      color: "#ff0000",
+      text: "",
+      icon: "/graphic/unit_map/axe.png",
+      coords: {}
+    },
+    def: {
+      id: "def",
+      name: "Defendendo",
+      color: "#004cff",
+      text: "",
+      icon: "/graphic/unit_map/sword.png",
+      coords: {}
+    },
+    nobre: {
+      id: "nobre",
+      name: "Nobre",
+      color: "#8a00ff",
+      text: "",
+      icon: "/graphic/unit_map/snob.png",
+      coords: {}
     }
-
-    let first = null;
-
-    for (const [coord, d] of Object.entries(old)) {
-      const name = (d && d.label) || ("Importado " + ((d && d.color) || ""));
-      const color = (d && d.color) || "#ff0000";
-      const gid = "imp_" + cleanId(name + color);
-
-      if (!state.groups[gid]) {
-        state.groups[gid] = {
-          name,
-          color,
-          symbol: name && name[0] ? name[0].toUpperCase() : "",
-          icon: "",
-          coords: {}
-        };
-      }
-
-      state.groups[gid].coords[coord] = 1;
-      if (!first) first = gid;
-    }
-
-    if (first) state.active = first;
-  }
-
-  let state = null;
-
-  try {
-    state = JSON.parse(localStorage.getItem(K) || "null");
-  } catch (e) {
-    state = null;
-  }
-
-  if (!state || !state.groups) {
-    state = defState();
-    importOld(state);
-    localStorage.setItem(K, JSON.stringify(state));
-  }
-
-  function save() {
-    localStorage.setItem(K, JSON.stringify(state));
-  }
+  };
 
   function host() {
     return (
@@ -141,18 +63,17 @@
     );
   }
 
-  function movePanelToHost() {
-    const p = document.getElementById("twm_panel");
-    if (!p) return;
-
+  function movePanelsToHost() {
     const h = host();
 
-    if (p.parentElement !== h) h.appendChild(p);
-    p.style.zIndex = "2147483647";
+    document.querySelectorAll(".twm_panel,.twm_main_panel").forEach(p => {
+      if (p.parentElement !== h) h.appendChild(p);
+      p.style.zIndex = "2147483647";
+    });
   }
 
-  function keyOf(c) {
-    return String(c).replace("|", "");
+  function keyOf(coord) {
+    return String(coord).replace("|", "");
   }
 
   function coordText(k) {
@@ -160,10 +81,10 @@
     return k.includes("|") ? k : k.slice(0, 3) + "|" + k.slice(3);
   }
 
-  function parseCoords(t) {
+  function parseCoords(text) {
     const out = [];
 
-    (String(t || "").match(/\d{3}\s*\|\s*\d{3}|\d{3}\s*[,; ]\s*\d{3}/g) || []).forEach(s => {
+    (String(text || "").match(/\d{3}\s*\|\s*\d{3}|\d{3}\s*[,; ]\s*\d{3}/g) || []).forEach(s => {
       const m = s.match(/(\d{3})\D+(\d{3})/);
       if (m) out.push(m[1] + "|" + m[2]);
     });
@@ -171,7 +92,7 @@
     return [...new Set(out)];
   }
 
-  function alpha(hex, a) {
+  function alpha(hex, opacity) {
     hex = String(hex || "#ff0000").replace("#", "");
 
     let r = parseInt(hex.slice(0, 2), 16);
@@ -184,21 +105,28 @@
       b = 0;
     }
 
-    return "rgba(" + r + "," + g + "," + b + "," + a + ")";
+    return "rgba(" + r + "," + g + "," + b + "," + opacity + ")";
   }
 
-  function current() {
-    if (!state.groups[state.active]) state.active = Object.keys(state.groups)[0];
-    return state.groups[state.active];
+  function resolveIconUrl(url) {
+    url = String(url || "").trim();
+
+    if (!url) return "";
+
+    if (url.startsWith("http://") || url.startsWith("https://")) return url;
+    if (url.startsWith("/")) return url;
+
+    return "/graphic/unit_map/" + url.replace(/^\/+/, "");
   }
 
-  function coordsToText(gid) {
-    const g = state.groups[gid || state.active];
-    return Object.keys((g && g.coords) || {}).map(coordText).sort().join("\n");
+  function coordsToText(group) {
+    return Object.keys(group.coords || {}).map(coordText).sort().join("\n");
   }
 
-  function removeCoordAll(c) {
-    for (const g of Object.values(state.groups)) delete g.coords[c];
+  function removeCoordFromAll(coord) {
+    for (const g of Object.values(groups)) {
+      delete g.coords[coord];
+    }
   }
 
   function findCoordByVillageId(id) {
@@ -227,17 +155,7 @@
     document.querySelectorAll(".twm_mark").forEach(e => e.remove());
   }
 
-  function resolveIconUrl(url) {
-    url = String(url || "").trim();
-    if (!url) return "";
-
-    if (url.startsWith("http://") || url.startsWith("https://")) return url;
-    if (url.startsWith("/")) return url;
-
-    return "/graphic/unit_map/" + url.replace(/^\/+/, "");
-  }
-
-  function markImg(img, c, g) {
+  function markImg(img, coord, group, isActive) {
     if (!img || !img.parentElement) return;
 
     const parent = img.parentElement;
@@ -249,8 +167,9 @@
     const box = document.createElement("div");
 
     box.className = "twm_mark";
-    box.dataset.coord = c;
-    box.title = (g.name ? g.name + " - " : "") + c;
+    box.dataset.coord = coord;
+    box.dataset.group = group.id;
+    box.title = group.name + " - " + coord;
 
     const left = img.style.left || img.offsetLeft + "px";
     const top = img.style.top || img.offsetTop + "px";
@@ -260,6 +179,10 @@
     let z = parseInt(img.style.zIndex || getComputedStyle(img).zIndex || 5);
     if (isNaN(z)) z = 5;
 
+    const bgOpacity = isActive ? 0.42 : 0.20;
+    const borderSize = isActive ? 3 : 2;
+    const brightness = isActive ? "brightness(1)" : "brightness(0.55)";
+
     box.style.cssText =
       "position:absolute;" +
       "left:" + left + ";" +
@@ -267,9 +190,9 @@
       "width:" + width + ";" +
       "height:" + height + ";" +
       "box-sizing:border-box;" +
-      "border:3px solid " + g.color + ";" +
-      "background:" + alpha(g.color, 0.38) + ";" +
-      "box-shadow:0 0 7px 3px " + g.color + ";" +
+      "border:" + borderSize + "px solid " + group.color + ";" +
+      "background:" + alpha(group.color, bgOpacity) + ";" +
+      "box-shadow:0 0 " + (isActive ? "7px 3px " : "4px 1px ") + group.color + ";" +
       "border-radius:3px;" +
       "z-index:" + (z + 50) + ";" +
       "pointer-events:none;" +
@@ -278,30 +201,39 @@
       "justify-content:center;" +
       "color:white;" +
       "font-weight:bold;" +
-      "font-size:15px;" +
+      "font-size:14px;" +
       "text-shadow:1px 1px 2px #000,-1px -1px 2px #000;" +
       "line-height:1;" +
       "text-align:center;" +
-      "overflow:hidden;";
+      "overflow:hidden;" +
+      "filter:" + brightness + ";";
 
-    const iconUrl = resolveIconUrl(g.icon);
+    const iconUrl = resolveIconUrl(group.icon);
 
     if (iconUrl) {
       const icon = document.createElement("img");
 
       icon.src = iconUrl;
-      icon.alt = g.symbol || g.name || "";
+      icon.alt = group.text || group.name || "";
       icon.style.cssText =
-        "max-width:22px;" +
-        "max-height:22px;" +
+        "max-width:20px;" +
+        "max-height:20px;" +
         "width:auto;" +
         "height:auto;" +
-        "filter:drop-shadow(1px 1px 2px #000) drop-shadow(-1px -1px 2px #000);" +
         "pointer-events:none;";
+
+      icon.onerror = function () {
+        if (this.src.includes(".png")) {
+          this.src = this.src.replace(".png", ".webp");
+        } else {
+          this.remove();
+          box.textContent = group.text || "";
+        }
+      };
 
       box.appendChild(icon);
     } else {
-      box.textContent = g.symbol || "";
+      box.textContent = group.text || "";
     }
 
     parent.appendChild(box);
@@ -310,109 +242,51 @@
   function draw() {
     clearMarks();
 
-    for (const g of Object.values(state.groups)) {
-      for (const c of Object.keys(g.coords || {})) {
-        const v = TWMap.villages[keyOf(c)];
+    for (const group of Object.values(groups)) {
+      const isActive = group.id === activeGroupId;
+
+      for (const coord of Object.keys(group.coords || {})) {
+        const v = TWMap.villages[keyOf(coord)];
         if (!v || !v.id) continue;
 
         const img = document.getElementById("map_village_" + v.id);
-        if (img) markImg(img, c, g);
+        if (img) markImg(img, coord, group, isActive);
       }
     }
 
-    movePanelToHost();
-    updateCount();
+    movePanelsToHost();
+    refreshAllPanels();
   }
 
-  function total() {
-    let n = 0;
+  function totalAll() {
+    let total = 0;
 
-    for (const g of Object.values(state.groups)) {
-      n += Object.keys(g.coords || {}).length;
+    for (const g of Object.values(groups)) {
+      total += Object.keys(g.coords || {}).length;
     }
 
-    return n;
+    return total;
   }
 
-  function groupTotal() {
-    const g = current();
-    return Object.keys((g && g.coords) || {}).length;
+  function setActiveGroup(id) {
+    activeGroupId = id;
+    refreshAllPanels();
+    draw();
   }
 
-  function updateCount() {
-    const e = document.getElementById("twm_count");
-    if (e) e.textContent = "No grupo: " + groupTotal() + " | Total geral: " + total();
-  }
-
-  function saveFields() {
-    const g = current();
-    if (!g) return;
-
-    g.name = document.getElementById("twm_name")?.value.trim() || g.name;
-    g.color = document.getElementById("twm_color")?.value || g.color;
-    g.symbol = document.getElementById("twm_symbol")?.value.trim() || "";
-    g.icon = document.getElementById("twm_icon")?.value.trim() || "";
-
-    save();
-  }
-
-  function rebuildSelect() {
-    const sel = document.getElementById("twm_group");
-    if (!sel) return;
-
-    sel.innerHTML = "";
-
-    for (const [id, g] of Object.entries(state.groups)) {
-      const o = document.createElement("option");
-
-      o.value = id;
-      o.textContent =
-        (g.symbol ? g.symbol + " " : "") +
-        g.name +
-        " (" +
-        Object.keys(g.coords || {}).length +
-        ")";
-
-      sel.appendChild(o);
-    }
-
-    sel.value = state.active;
-  }
-
-  function loadActive() {
-    const g = current();
-    if (!g) return;
-
-    document.getElementById("twm_name").value = g.name || "";
-    document.getElementById("twm_color").value = g.color || "#ff0000";
-    document.getElementById("twm_symbol").value = g.symbol || "";
-    document.getElementById("twm_icon").value = g.icon || "";
-
-    const preset = document.getElementById("twm_icon_preset");
-    if (preset) {
-      const values = [...preset.options].map(o => o.value);
-      preset.value = values.includes(g.icon || "") ? (g.icon || "") : "custom";
-    }
-
-    document.getElementById("twm_text").value = coordsToText(state.active);
-
-    rebuildSelect();
-    updateCount();
-  }
-
-  function drag(p, h) {
+  function drag(panel, header) {
     let ox = 0;
     let oy = 0;
     let on = false;
 
-    h.style.cursor = "move";
+    header.style.cursor = "move";
 
-    h.onmousedown = e => {
+    header.onmousedown = e => {
       if (e.target.tagName === "BUTTON") return;
 
       on = true;
-      ox = e.clientX - p.offsetLeft;
-      oy = e.clientY - p.offsetTop;
+      ox = e.clientX - panel.offsetLeft;
+      oy = e.clientY - panel.offsetTop;
 
       e.preventDefault();
     };
@@ -420,9 +294,9 @@
     document.addEventListener("mousemove", e => {
       if (!on) return;
 
-      p.style.left = e.clientX - ox + "px";
-      p.style.top = e.clientY - oy + "px";
-      p.style.right = "auto";
+      panel.style.left = e.clientX - ox + "px";
+      panel.style.top = e.clientY - oy + "px";
+      panel.style.right = "auto";
     });
 
     document.addEventListener("mouseup", () => {
@@ -430,240 +304,338 @@
     });
   }
 
-  const p = document.createElement("div");
+  function iconOptionsHtml() {
+    return (
+      '<option value="">Sem ícone</option>' +
+      '<option value="/graphic/unit_map/spear.png">Lança</option>' +
+      '<option value="/graphic/unit_map/sword.png">Espada</option>' +
+      '<option value="/graphic/unit_map/axe.png">Machado</option>' +
+      '<option value="/graphic/unit_map/archer.webp">Arqueiro</option>' +
+      '<option value="/graphic/unit_map/spy.webp">Espião</option>' +
+      '<option value="/graphic/unit_map/light.png">Leve</option>' +
+      '<option value="/graphic/unit_map/marcher.png">Arq. montado</option>' +
+      '<option value="/graphic/unit_map/heavy.webp">Pesada</option>' +
+      '<option value="/graphic/unit_map/ram.webp">Aríete</option>' +
+      '<option value="/graphic/unit_map/catapult.webp">Catapulta</option>' +
+      '<option value="/graphic/unit_map/knight.png">Paladino</option>' +
+      '<option value="/graphic/unit_map/snob.png">Nobre</option>' +
+      '<option value="/graphic/unit_map/militia.webp">Milícia</option>' +
+      '<option value="custom">Personalizado</option>'
+    );
+  }
 
-  p.id = "twm_panel";
-  p.style.cssText =
-    "position:fixed;" +
-    "right:18px;" +
-    "top:95px;" +
-    "z-index:2147483647;" +
-    "background:#f4e4bc;" +
-    "border:2px solid #7d510f;" +
-    "padding:0;" +
-    "color:#000;" +
-    "font-size:12px;" +
-    "box-shadow:0 0 8px #000;" +
-    "border-radius:4px;" +
-    "min-width:430px;";
+  function createMainPanel() {
+    const p = document.createElement("div");
 
-  p.innerHTML =
-    '<div id="twm_head" style="background:#d7bd82;padding:6px;font-weight:bold;">' +
-      'Marcador de aldeias v6 ' +
-      '<button id="twm_close" style="float:right">X</button>' +
-    '</div>' +
-    '<div style="padding:7px">' +
-      '<div>' +
-        'Grupo: <select id="twm_group" style="width:185px"></select> ' +
-        '<button id="twm_new">Novo</button> ' +
-        '<button id="twm_del">Excluir</button>' +
+    p.id = "twm_main_panel";
+    p.className = "twm_main_panel";
+
+    p.style.cssText =
+      "position:fixed;" +
+      "right:18px;" +
+      "top:90px;" +
+      "z-index:2147483647;" +
+      "background:#f4e4bc;" +
+      "border:2px solid #7d510f;" +
+      "box-shadow:0 0 8px #000;" +
+      "color:#000;" +
+      "font-size:12px;" +
+      "min-width:260px;";
+
+    p.innerHTML =
+      '<div id="twm_main_head" style="background:#d7bd82;padding:6px;font-weight:bold;">' +
+        'Marcador V7 ' +
+        '<button id="twm_close_all" style="float:right">X</button>' +
       '</div>' +
-      '<div style="margin-top:5px">' +
-        'Nome: <input id="twm_name" style="width:120px"> ' +
-        'Cor: <input id="twm_color" type="color" value="#ff0000"> ' +
-        'Texto: <input id="twm_symbol" maxlength="6" style="width:45px"> ' +
-        '<button id="twm_save_group">Salvar grupo</button>' +
-      '</div>' +
-      '<div style="margin-top:5px">' +
-        'Ícone: <select id="twm_icon_preset" style="width:105px">' +
-          '<option value="">Sem ícone</option>' +
-          '<option value="/graphic/unit_map/spear.webp">Lança</option>' +
-          '<option value="/graphic/unit_map/sword.webp">Espada</option>' +
-          '<option value="/graphic/unit_map/axe.webp">Machado</option>' +
-          '<option value="/graphic/unit_map/archer.webp">Arqueiro</option>' +
-          '<option value="/graphic/unit_map/spy.webp">Espião</option>' +
-          '<option value="/graphic/unit_map/light.webp">Leve</option>' +
-          '<option value="/graphic/unit_map/marcher.webp">Arq. montado</option>' +
-          '<option value="/graphic/unit_map/heavy.webp">Pesada</option>' +
-          '<option value="/graphic/unit_map/ram.webp">Aríete</option>' +
-          '<option value="/graphic/unit_map/catapult.webp">Catapulta</option>' +
-          '<option value="/graphic/unit_map/knight.webp">Paladino</option>' +
-          '<option value="/graphic/unit_map/snob.webp">Nobre</option>' +
-          '<option value="/graphic/unit_map/militia.webp">Milícia</option>' +
-          '<option value="custom">Personalizado</option>' +
-        '</select> ' +
-        'URL: <input id="twm_icon" placeholder="/graphic/unit_map/snob.webp" style="width:205px">' +
-      '</div>' +
-      '<textarea id="twm_text" placeholder="Coords do grupo selecionado. Ex: 565|526 544|531" style="width:410px;height:90px;margin-top:6px"></textarea><br>' +
-      '<button id="twm_add">Adicionar coords ao grupo</button> ' +
-      '<button id="twm_click">Modo clique: OFF</button> ' +
-      '<button id="twm_copy">Copiar grupo</button> ' +
-      '<button id="twm_clear_group">Limpar grupo</button> ' +
-      '<button id="twm_clear_all">Limpar tudo</button>' +
-      '<div id="twm_count" style="margin-top:5px;font-size:11px"></div>' +
-    '</div>';
+      '<div style="padding:7px">' +
+        '<button id="twm_new_group">Novo grupo</button> ' +
+        '<button id="twm_click_mode">Modo clique: OFF</button> ' +
+        '<button id="twm_clear_all">Limpar tudo</button>' +
+        '<div id="twm_main_info" style="margin-top:6px;font-size:11px"></div>' +
+      '</div>';
 
-  host().appendChild(p);
+    host().appendChild(p);
+    drag(p, document.getElementById("twm_main_head"));
 
-  drag(p, document.getElementById("twm_head"));
+    document.getElementById("twm_new_group").onclick = function () {
+      const id = "g" + Date.now();
 
-  document.getElementById("twm_close").onclick = () => {
-    p.remove();
-    clearMarks();
+      groups[id] = {
+        id,
+        name: "Novo grupo",
+        color: "#ff0000",
+        text: "",
+        icon: "",
+        coords: {}
+      };
 
-    if (w.__twm_interval) clearInterval(w.__twm_interval);
-    if (w.__twm_fullscreen_listener) {
-      document.removeEventListener("fullscreenchange", w.__twm_fullscreen_listener);
-    }
-    if (w.__twm_click_listener) {
-      document.removeEventListener("click", w.__twm_click_listener, true);
-    }
-  };
-
-  document.getElementById("twm_icon_preset").onchange = function () {
-    if (this.value !== "custom") {
-      document.getElementById("twm_icon").value = this.value;
-      saveFields();
+      activeGroupId = id;
+      createGroupPanel(groups[id]);
       draw();
-    }
-  };
-
-  document.getElementById("twm_group").onchange = function () {
-    saveFields();
-    state.active = this.value;
-    save();
-    loadActive();
-    draw();
-  };
-
-  document.getElementById("twm_save_group").onclick = function () {
-    saveFields();
-    rebuildSelect();
-    draw();
-  };
-
-  document.getElementById("twm_new").onclick = function () {
-    saveFields();
-
-    const id = "g" + Date.now();
-
-    state.groups[id] = {
-      name: "Novo grupo",
-      color: "#ff0000",
-      symbol: "?",
-      icon: "",
-      coords: {}
     };
 
-    state.active = id;
-    save();
-    loadActive();
-    draw();
-  };
+    document.getElementById("twm_click_mode").onclick = function () {
+      clickMode = !clickMode;
+      this.textContent = "Modo clique: " + (clickMode ? "ON" : "OFF");
+      this.style.fontWeight = clickMode ? "bold" : "normal";
+    };
 
-  document.getElementById("twm_del").onclick = function () {
-    if (Object.keys(state.groups).length <= 1) {
-      alert("Precisa ter pelo menos 1 grupo.");
-      return;
-    }
+    document.getElementById("twm_clear_all").onclick = function () {
+      if (!confirm("Apagar todas as marcações de todos os grupos?")) return;
 
-    const g = current();
+      for (const g of Object.values(groups)) {
+        g.coords = {};
+      }
 
-    if (confirm('Excluir o grupo "' + g.name + '"?')) {
-      delete state.groups[state.active];
-      state.active = Object.keys(state.groups)[0];
-
-      save();
-      loadActive();
       draw();
+    };
+
+    document.getElementById("twm_close_all").onclick = function () {
+      document.querySelectorAll(".twm_mark,.twm_panel,.twm_main_panel").forEach(e => e.remove());
+
+      if (w.__twm_interval) clearInterval(w.__twm_interval);
+      if (w.__twm_fullscreen_listener) {
+        document.removeEventListener("fullscreenchange", w.__twm_fullscreen_listener);
+      }
+      if (w.__twm_click_listener) {
+        document.removeEventListener("click", w.__twm_click_listener, true);
+      }
+    };
+  }
+
+  function createGroupPanel(group) {
+    groupIndex++;
+
+    const p = document.createElement("div");
+
+    p.id = "twm_panel_" + group.id;
+    p.className = "twm_panel";
+    p.dataset.group = group.id;
+
+    const top = 170 + groupIndex * 34;
+    const right = 18 + (groupIndex % 2) * 355;
+
+    p.style.cssText =
+      "position:fixed;" +
+      "right:" + right + "px;" +
+      "top:" + top + "px;" +
+      "z-index:2147483647;" +
+      "background:#f4e4bc;" +
+      "border:2px solid #7d510f;" +
+      "box-shadow:0 0 8px #000;" +
+      "color:#000;" +
+      "font-size:12px;" +
+      "width:335px;";
+
+    p.innerHTML =
+      '<div class="twm_head" style="background:#d7bd82;padding:6px;font-weight:bold;">' +
+        '<span class="twm_title"></span>' +
+        '<button class="twm_del_group" style="float:right;margin-left:4px">Excluir</button>' +
+        '<button class="twm_set_active" style="float:right">Editar</button>' +
+      '</div>' +
+      '<div style="padding:7px">' +
+        'Nome: <input class="twm_name" style="width:115px"> ' +
+        'Cor: <input class="twm_color" type="color"> ' +
+        'Texto: <input class="twm_text_symbol" maxlength="6" style="width:42px">' +
+        '<br>' +
+        'Ícone: <select class="twm_icon_preset" style="width:110px;margin-top:5px">' +
+          iconOptionsHtml() +
+        '</select> ' +
+        'URL: <input class="twm_icon_url" placeholder="/graphic/unit_map/snob.png" style="width:170px">' +
+        '<textarea class="twm_coords" style="width:315px;height:80px;margin-top:6px" placeholder="Coords deste grupo. Ex: 565|526"></textarea>' +
+        '<br>' +
+        '<button class="twm_add_coords">Adicionar coords</button> ' +
+        '<button class="twm_copy_coords">Copiar</button> ' +
+        '<button class="twm_clear_group">Limpar grupo</button>' +
+        '<div class="twm_info" style="margin-top:5px;font-size:11px"></div>' +
+      '</div>';
+
+    host().appendChild(p);
+    drag(p, p.querySelector(".twm_head"));
+
+    const name = p.querySelector(".twm_name");
+    const color = p.querySelector(".twm_color");
+    const text = p.querySelector(".twm_text_symbol");
+    const iconPreset = p.querySelector(".twm_icon_preset");
+    const iconUrl = p.querySelector(".twm_icon_url");
+    const coords = p.querySelector(".twm_coords");
+
+    name.value = group.name;
+    color.value = group.color;
+    text.value = group.text || "";
+    iconUrl.value = group.icon || "";
+    coords.value = coordsToText(group);
+
+    const presetValues = [...iconPreset.options].map(o => o.value);
+    iconPreset.value = presetValues.includes(group.icon || "") ? (group.icon || "") : "custom";
+
+    function saveGroupFields() {
+      group.name = name.value.trim() || group.name;
+      group.color = color.value || group.color;
+      group.text = text.value.trim() || "";
+      group.icon = iconUrl.value.trim() || "";
     }
-  };
 
-  document.getElementById("twm_add").onclick = function () {
-    saveFields();
-
-    const g = current();
-    const cs = parseCoords(document.getElementById("twm_text").value);
-
-    if (!cs.length) {
-      alert("Nenhuma coordenada encontrada. Use 565|526.");
-      return;
-    }
-
-    cs.forEach(c => {
-      removeCoordAll(c);
-      g.coords[c] = 1;
+    [name, color, text, iconUrl].forEach(el => {
+      el.addEventListener("change", function () {
+        saveGroupFields();
+        draw();
+      });
     });
 
-    save();
-    loadActive();
-    draw();
-  };
+    iconPreset.onchange = function () {
+      if (this.value !== "custom") {
+        iconUrl.value = this.value;
+        saveGroupFields();
+        draw();
+      }
+    };
 
-  document.getElementById("twm_copy").onclick = function () {
-    navigator.clipboard?.writeText(coordsToText(state.active));
-  };
+    p.querySelector(".twm_set_active").onclick = function () {
+      saveGroupFields();
+      setActiveGroup(group.id);
+    };
 
-  document.getElementById("twm_clear_group").onclick = function () {
-    const g = current();
+    p.querySelector(".twm_add_coords").onclick = function () {
+      saveGroupFields();
 
-    if (confirm('Limpar todas as coords do grupo "' + g.name + '"?')) {
-      g.coords = {};
-      save();
-      loadActive();
+      const parsed = parseCoords(coords.value);
+
+      if (!parsed.length) {
+        alert("Nenhuma coordenada encontrada. Use 565|526.");
+        return;
+      }
+
+      parsed.forEach(c => {
+        removeCoordFromAll(c);
+        group.coords[c] = 1;
+      });
+
+      coords.value = coordsToText(group);
       draw();
-    }
-  };
+    };
 
-  document.getElementById("twm_clear_all").onclick = function () {
-    if (confirm("Apagar todas as marcações de todos os grupos?")) {
-      for (const g of Object.values(state.groups)) g.coords = {};
+    p.querySelector(".twm_copy_coords").onclick = function () {
+      navigator.clipboard?.writeText(coordsToText(group));
+    };
 
-      save();
-      loadActive();
+    p.querySelector(".twm_clear_group").onclick = function () {
+      if (!confirm('Limpar grupo "' + group.name + '"?')) return;
+
+      group.coords = {};
+      coords.value = "";
       draw();
+    };
+
+    p.querySelector(".twm_del_group").onclick = function () {
+      if (Object.keys(groups).length <= 1) {
+        alert("Precisa ter pelo menos 1 grupo.");
+        return;
+      }
+
+      if (!confirm('Excluir grupo "' + group.name + '"?')) return;
+
+      delete groups[group.id];
+      p.remove();
+
+      if (activeGroupId === group.id) {
+        activeGroupId = Object.keys(groups)[0];
+      }
+
+      draw();
+    };
+
+    refreshGroupPanel(group);
+  }
+
+  function refreshGroupPanel(group) {
+    const p = document.getElementById("twm_panel_" + group.id);
+    if (!p) return;
+
+    const isActive = group.id === activeGroupId;
+    const count = Object.keys(group.coords || {}).length;
+
+    p.querySelector(".twm_title").textContent =
+      (isActive ? "EDITANDO: " : "Grupo: ") + group.name + " (" + count + ")";
+
+    p.querySelector(".twm_info").textContent =
+      "Coords: " + count + (isActive ? " | ativo para clique" : " | inativo");
+
+    p.querySelector(".twm_coords").value = coordsToText(group);
+
+    if (isActive) {
+      p.style.opacity = "1";
+      p.style.filter = "brightness(1)";
+      p.style.borderColor = group.color;
+    } else {
+      p.style.opacity = "0.58";
+      p.style.filter = "brightness(0.72)";
+      p.style.borderColor = "#7d510f";
     }
-  };
+  }
+
+  function refreshAllPanels() {
+    for (const g of Object.values(groups)) {
+      refreshGroupPanel(g);
+    }
+
+    const info = document.getElementById("twm_main_info");
+    if (info) {
+      const active = groups[activeGroupId];
+      info.textContent =
+        "Editando: " +
+        (active ? active.name : "-") +
+        " | Total geral: " +
+        totalAll();
+    }
+  }
 
   w.__twm_click_listener = function (e) {
     if (!clickMode) return;
-    if (e.target.closest("#twm_panel")) return;
+    if (e.target.closest(".twm_panel,.twm_main_panel")) return;
+
+    const active = groups[activeGroupId];
+    if (!active) return;
 
     let coord = null;
     const img = e.target.closest('img[id^="map_village_"]');
 
-    if (img) coord = findCoordByVillageId(img.id.replace("map_village_", ""));
+    if (img) {
+      coord = findCoordByVillageId(img.id.replace("map_village_", ""));
+    }
+
     if (!coord) coord = coordFromEvent(e);
     if (!coord || !TWMap.villages[keyOf(coord)]) return;
 
     e.preventDefault();
     e.stopPropagation();
 
-    saveFields();
-
-    const g = current();
-
-    if (g.coords[coord]) {
-      delete g.coords[coord];
+    if (active.coords[coord]) {
+      delete active.coords[coord];
     } else {
-      removeCoordAll(coord);
-      g.coords[coord] = 1;
+      removeCoordFromAll(coord);
+      active.coords[coord] = 1;
     }
 
-    save();
-    loadActive();
     draw();
-  };
-
-  document.getElementById("twm_click").onclick = function () {
-    clickMode = !clickMode;
-    this.textContent = "Modo clique: " + (clickMode ? "ON" : "OFF");
-    this.style.fontWeight = clickMode ? "bold" : "normal";
   };
 
   document.addEventListener("click", w.__twm_click_listener, true);
 
   w.__twm_fullscreen_listener = function () {
     setTimeout(() => {
-      movePanelToHost();
+      movePanelsToHost();
       draw();
     }, 150);
   };
 
   document.addEventListener("fullscreenchange", w.__twm_fullscreen_listener);
 
+  createMainPanel();
+
+  Object.values(groups).forEach(g => createGroupPanel(g));
+
   w.__twm_interval = setInterval(draw, 800);
 
-  loadActive();
   draw();
 })();
