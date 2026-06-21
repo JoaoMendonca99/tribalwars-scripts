@@ -76,9 +76,11 @@
 
   const ATTACKERS_GROUP_ID = "system_attackers";
   const ALL_OWN = "__all_own__";
+  const NATIVE_INCOMING = "__native_incoming__";
   const ATTACK_ALL_OWN = ALL_OWN;
   const DEBUG_ATTACK_PARSER = true;
   const DEBUG_VILLAGE_DISCOVERY = true;
+  const NATIVE_INCOMING_GROUP_NAME = "Ataque a caminho";
 
   const ATTACK_RISK_COLORS = {
     scout: "#00bfff",
@@ -676,10 +678,6 @@
     return await getAllOwnVillages();
   }
 
-  async function getAllOwnVillagesForAttackMapping() {
-    return await getAllOwnVillages();
-  }
-
   function buildOverviewVillagesUrl(mode) {
     const sourceId = w.game_data && w.game_data.village ? w.game_data.village.id : null;
     const base =
@@ -687,6 +685,138 @@
       (sourceId ? "/game.php?village=" + sourceId + "&screen=" : "/game.php?screen=");
 
     return base + "overview_villages" + (mode ? "&mode=" + mode : "");
+  }
+
+  function buildOverviewVillagesUrlWithGroup(mode, groupId) {
+    let url = buildOverviewVillagesUrl(mode);
+
+    if (groupId) {
+      url += "&group=" + encodeURIComponent(groupId);
+    }
+
+    return url;
+  }
+
+  function normalizeGroupName(name) {
+    return String(name || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function dedupeNativeGroups(list) {
+    const seen = {};
+    const out = [];
+
+    list.forEach(function (group) {
+      if (!group || !group.id) {
+        return;
+      }
+
+      const key = String(group.id) + "|" + normalizeGroupName(group.name);
+
+      if (seen[key]) {
+        return;
+      }
+
+      seen[key] = true;
+      out.push({
+        id: String(group.id),
+        name: String(group.name || "").replace(/\s+/g, " ").trim()
+      });
+    });
+
+    return out;
+  }
+
+  function parseNativeGroupsFromHtml(html) {
+    const doc = parseHtmlDoc(html);
+    const found = [];
+
+    function pushGroup(id, name) {
+      const gid = String(id || "").trim();
+      const gname = String(name || "").replace(/\s+/g, " ").trim();
+
+      if (!gid || !gname) {
+        return;
+      }
+
+      found.push({
+        id: gid,
+        name: gname
+      });
+    }
+
+    doc.querySelectorAll('a[href*="group="]').forEach(function (a) {
+      const href = a.getAttribute("href") || "";
+      const match = href.match(/[?&]group=(\d+)/);
+
+      if (match) {
+        pushGroup(match[1], (a.innerText || a.textContent || "").trim());
+      }
+    });
+
+    doc.querySelectorAll("option[value]").forEach(function (opt) {
+      const val = String(opt.value || "").trim();
+
+      if (/^\d+$/.test(val)) {
+        pushGroup(val, (opt.textContent || "").trim());
+      }
+    });
+
+    return dedupeNativeGroups(found);
+  }
+
+  async function getNativeVillageGroups() {
+    try {
+      const html = await fetchGameUrl(buildOverviewVillagesUrl("groups"));
+
+      return parseNativeGroupsFromHtml(html);
+    } catch (err) {
+      if (DEBUG_VILLAGE_DISCOVERY) {
+        console.log("[NativeGroups] falhou ao carregar grupos nativos", err);
+      }
+
+      return [];
+    }
+  }
+
+  async function findNativeGroupByName(name) {
+    const nativeGroups = await getNativeVillageGroups();
+
+    if (DEBUG_VILLAGE_DISCOVERY) {
+      console.log("[NativeGroups]", nativeGroups);
+    }
+
+    const target = normalizeGroupName(name);
+
+    for (let i = 0; i < nativeGroups.length; i++) {
+      if (normalizeGroupName(nativeGroups[i].name) === target) {
+        return nativeGroups[i];
+      }
+    }
+
+    return null;
+  }
+
+  async function getOwnVillagesFromNativeGroup(groupId) {
+    if (!groupId) {
+      return [];
+    }
+
+    try {
+      const html = await fetchGameUrl(buildOverviewVillagesUrlWithGroup("combined", groupId));
+
+      return parseOwnVillagesFromOverviewHtml(html);
+    } catch (err) {
+      if (DEBUG_VILLAGE_DISCOVERY) {
+        console.log("[NativeGroupVillages] falhou group=" + groupId, err);
+      }
+
+      return [];
+    }
   }
 
   function findVillageIdByCoord(coord) {
@@ -1871,7 +2001,6 @@
       el.remove();
     });
 
-    refreshAttackTargetSelect();
     refreshDefenseGroupSelect();
   }
 
@@ -2280,7 +2409,6 @@
     attackResults = {};
     clearAttackerSourceResults();
     clearAttackOverlays();
-    refreshAttackTargetSelect();
     draw();
     setAttackStatus("Ataques limpos.");
   }
@@ -2308,7 +2436,7 @@
 
   function updateAttackButtons() {
     const cancelBtn = document.getElementById("twm_cancel_attack");
-    const mapBtn = document.getElementById("twm_map_attacks");
+    const mapBtn = document.getElementById("twm_map_native_incoming_attacks");
 
     if (cancelBtn) {
       cancelBtn.disabled = !attackMappingInProgress;
@@ -2316,42 +2444,6 @@
 
     if (mapBtn) {
       mapBtn.disabled = attackMappingInProgress;
-    }
-  }
-
-  function refreshAttackTargetSelect() {
-    const select = document.getElementById("twm_attack_target_select");
-
-    if (!select) {
-      return;
-    }
-
-    const currentValue = select.value;
-
-    select.innerHTML = "";
-
-    const allOpt = document.createElement("option");
-
-    allOpt.value = ALL_OWN;
-    allOpt.textContent = "Todas as aldeias próprias";
-    select.appendChild(allOpt);
-
-    Object.values(groups).forEach(function (group) {
-      if (group.systemType === "attackers") {
-        return;
-      }
-
-      const opt = document.createElement("option");
-
-      opt.value = group.id;
-      opt.textContent = group.name + " (" + Object.keys(group.coords || {}).length + ")";
-      select.appendChild(opt);
-    });
-
-    if (currentValue && (currentValue === ALL_OWN || groups[currentValue])) {
-      select.value = currentValue;
-    } else {
-      select.value = ALL_OWN;
     }
   }
 
@@ -2451,35 +2543,34 @@
     });
   }
 
-  async function mapAttacksForSelectedTarget() {
+  async function mapAttacksFromNativeIncomingGroup() {
     if (attackMappingInProgress) {
       setAttackStatus("Mapeamento de ataques já em andamento.", true);
       return;
     }
 
-    const select = document.getElementById("twm_attack_target_select");
-    const value = select ? select.value : ALL_OWN;
+    const group = await findNativeGroupByName(NATIVE_INCOMING_GROUP_NAME);
 
-    if (value === ALL_OWN) {
-      await mapAttacksForAllOwnVillages();
+    if (DEBUG_VILLAGE_DISCOVERY) {
+      console.log("[NativeGroup Ataque a caminho]", group);
+    }
+
+    if (!group) {
+      setAttackStatus(
+        'Grupo "Ataque a caminho" não encontrado. Crie ou configure esse grupo no sistema de grupos do jogo.',
+        true
+      );
       return;
     }
 
-    const group = groups[value];
+    const villages = await getOwnVillagesFromNativeGroup(group.id);
 
-    if (!group || group.systemType === "attackers") {
-      setAttackStatus("Selecione um grupo ou Todas as aldeias próprias.", true);
-      return;
+    if (DEBUG_VILLAGE_DISCOVERY) {
+      console.log("[NativeGroupVillages]", villages.length, villages.slice(0, 10));
     }
 
-    await mapAttacksForGroup(group);
-  }
-
-  async function mapAttacksForAllOwnVillages() {
-    const ownVillages = await getAllOwnVillagesForAttackMapping();
-
-    if (!ownVillages.length) {
-      setAttackStatus("Não foi possível carregar a lista de aldeias próprias.", true);
+    if (!villages.length) {
+      setAttackStatus('O grupo "Ataque a caminho" não possui aldeias no momento.');
       return;
     }
 
@@ -2496,14 +2587,14 @@
     let failed = 0;
     let origins = 0;
 
-    setAttackStatus("Mapeando ataques em todas as aldeias próprias...");
+    setAttackStatus('Mapeando ataques do grupo "Ataque a caminho"...');
 
-    for (let i = 0; i < ownVillages.length; i++) {
+    for (let i = 0; i < villages.length; i++) {
       if (attackMappingCancelled) {
         break;
       }
 
-      const item = ownVillages[i];
+      const item = villages[i];
 
       try {
         const data = await getVillageAttackDataByVillageRef(item);
@@ -2515,13 +2606,13 @@
             delete attackResults[data.coord];
           }
 
-          setAttackStatus("Mapeando ataques " + checked + "/" + ownVillages.length + " | sem ataques");
+          setAttackStatus("Mapeando ataques " + checked + "/" + villages.length + " | sem ataques");
           await sleep(250);
           continue;
         }
 
         if (!data.coord) {
-          setAttackStatus("Mapeando ataques " + checked + "/" + ownVillages.length + " | sem coordenada");
+          setAttackStatus("Mapeando ataques " + checked + "/" + villages.length + " | sem coordenada");
           await sleep(250);
           continue;
         }
@@ -2538,7 +2629,7 @@
           "Mapeando ataques " +
           checked +
           "/" +
-          ownVillages.length +
+          villages.length +
           " | ataques em " +
           data.coord +
           " | origens: " +
@@ -2552,7 +2643,7 @@
         await sleep(ATTACK_FETCH_DELAY);
       } catch (err) {
         failed++;
-        console.error("Erro ao mapear ataques:", item, err);
+        console.error("Erro ao mapear ataques do grupo Ataque a caminho:", item, err);
       }
     }
 
@@ -2566,7 +2657,7 @@
 
     if (attackMappingCancelled) {
       setAttackStatus(
-        "Mapeamento cancelado. Verificadas: " +
+        'Mapeamento cancelado. Grupo "Ataque a caminho" | Verificadas: ' +
         checked +
         " | Com ataques: " +
         withIncoming +
@@ -2577,150 +2668,7 @@
       );
     } else {
       setAttackStatus(
-        "Mapeamento concluído. Verificadas: " +
-        checked +
-        " | Com ataques: " +
-        withIncoming +
-        " | Origens: " +
-        origins +
-        " | Falhas: " +
-        failed
-      );
-    }
-  }
-
-  async function mapAttacksForGroup(group) {
-    if (!group || !group.coords) {
-      setAttackStatus("Grupo inválido para mapear ataques.", true);
-      return;
-    }
-
-    const coords = Object.keys(group.coords);
-
-    if (!coords.length) {
-      setAttackStatus("O grupo " + group.name + " não tem aldeias.", true);
-      return;
-    }
-
-    attackResults = {};
-    clearAttackerSourceResults();
-
-    attackMappingCancelled = false;
-    attackMappingInProgress = true;
-    updateAttackButtons();
-    w.__twm_attack_cancel = cancelAttackMapping;
-
-    let checked = 0;
-    let withIncoming = 0;
-    let failed = 0;
-    let skipped = 0;
-    let origins = 0;
-
-    setAttackStatus("Mapeando ataques do grupo " + group.name + "...");
-
-    for (let i = 0; i < coords.length; i++) {
-      if (attackMappingCancelled) {
-        break;
-      }
-
-      const coord = coords[i];
-      const villageId = findVillageIdByCoord(coord);
-
-      if (!villageId) {
-        skipped++;
-        setAttackStatus(
-          "Mapeando " + group.name + " " + (i + 1) + "/" + coords.length +
-          " | sem villageId: " + coord
-        );
-        continue;
-      }
-
-      try {
-        const data = await getVillageAttackDataByVillageRef({
-          villageId: villageId,
-          coord: coord,
-          name: coord
-        });
-
-        checked++;
-
-        if (attackMappingCancelled) {
-          break;
-        }
-
-        if (!data || !data.coord) {
-          skipped++;
-          setAttackStatus(
-            "Mapeando ataques " + checked + "/" + coords.length + " | sem coordenada"
-          );
-          await sleep(250);
-          continue;
-        }
-
-        if (!data.total) {
-          if (attackResults[data.coord]) {
-            delete attackResults[data.coord];
-          }
-
-          setAttackStatus(
-            "Mapeando ataques " + checked + "/" + coords.length + " | sem ataques em " + data.coord
-          );
-          await sleep(250);
-          continue;
-        }
-
-        data.risk = calculateAttackRisk(data.coord, data, defenseResults[data.coord]);
-        attackResults[data.coord] = data;
-        withIncoming++;
-
-        origins = Object.keys(attackerSourceResults || {}).length;
-
-        draw();
-
-        setAttackStatus(
-          "Mapeando ataques " +
-          checked +
-          "/" +
-          coords.length +
-          " | ataques em " +
-          data.coord +
-          " | origens: " +
-          origins
-        );
-
-        if (attackMappingCancelled) {
-          break;
-        }
-
-        await sleep(ATTACK_FETCH_DELAY);
-      } catch (err) {
-        failed++;
-        console.error("Erro ao mapear ataques do grupo:", coord, err);
-      }
-    }
-
-    attackMappingInProgress = false;
-    w.__twm_attack_cancel = null;
-    w.__twm_attack_mapping_timer = null;
-    updateAttackButtons();
-    updateAttackInfo();
-    refreshAllPanels();
-    draw();
-
-    if (attackMappingCancelled) {
-      setAttackStatus(
-        "Mapeamento cancelado. Verificadas: " +
-        checked +
-        " | Com ataques: " +
-        withIncoming +
-        " | Origens: " +
-        origins +
-        " | Falhas: " +
-        failed
-      );
-    } else {
-      setAttackStatus(
-        "Mapeamento concluído. Verificadas: " +
+        'Mapeamento concluído. Grupo "Ataque a caminho" | Verificadas: ' +
         checked +
         " | Com ataques: " +
         withIncoming +
@@ -2762,6 +2710,12 @@
     allOpt.textContent = "Todas as aldeias próprias";
     select.appendChild(allOpt);
 
+    const incomingOpt = document.createElement("option");
+
+    incomingOpt.value = NATIVE_INCOMING;
+    incomingOpt.textContent = NATIVE_INCOMING_GROUP_NAME;
+    select.appendChild(incomingOpt);
+
     Object.values(groups).forEach(function (group) {
       if (group.systemType === "attackers") {
         return;
@@ -2774,7 +2728,14 @@
       select.appendChild(opt);
     });
 
-    if (currentValue && (currentValue === ALL_OWN || groups[currentValue])) {
+    if (
+      currentValue &&
+      (
+        currentValue === ALL_OWN ||
+        currentValue === NATIVE_INCOMING ||
+        groups[currentValue]
+      )
+    ) {
       select.value = currentValue;
     } else {
       select.value = ALL_OWN;
@@ -2899,10 +2860,15 @@
       return;
     }
 
+    if (value === NATIVE_INCOMING) {
+      await mapDefenseForNativeIncomingGroup();
+      return;
+    }
+
     const group = groups[value];
 
     if (!group || group.systemType === "attackers") {
-      setDefenseStatus("Selecione um grupo ou Todas as aldeias próprias.", true);
+      setDefenseStatus("Selecione Todas as aldeias próprias, Ataque a caminho ou um grupo.", true);
       return;
     }
 
@@ -3008,6 +2974,115 @@
     } else {
       setDefenseStatus(
         "Mapeamento de defesa concluído. OK: " +
+        ok +
+        " | Falhas: " +
+        failed
+      );
+    }
+  }
+
+  async function mapDefenseForNativeIncomingGroup() {
+    const nativeGroup = await findNativeGroupByName(NATIVE_INCOMING_GROUP_NAME);
+
+    if (!nativeGroup) {
+      setDefenseStatus(
+        'Grupo nativo "Ataque a caminho" não encontrado. Crie ou configure esse grupo no sistema de grupos do jogo.',
+        true
+      );
+      return;
+    }
+
+    const villages = await getOwnVillagesFromNativeGroup(nativeGroup.id);
+
+    if (!villages.length) {
+      setDefenseStatus('O grupo "Ataque a caminho" não possui aldeias no momento.');
+      return;
+    }
+
+    defenseMappingCancelled = false;
+    defenseMappingInProgress = true;
+    updateDefenseButtons();
+    w.__twm_defense_cancel = cancelDefenseMapping;
+
+    let ok = 0;
+    let failed = 0;
+
+    setDefenseStatus('Mapeando defesa do grupo "Ataque a caminho"...');
+
+    for (let i = 0; i < villages.length; i++) {
+      if (defenseMappingCancelled) {
+        break;
+      }
+
+      const item = villages[i];
+
+      try {
+        const data = await getVillageDefenseDataByVillageRef(item);
+
+        if (!data || !canSeparateDefenseData(data)) {
+          failed++;
+          setDefenseStatus(
+            'Mapeando defesa "Ataque a caminho" ' +
+            (i + 1) +
+            "/" +
+            villages.length +
+            " | sem dados separados"
+          );
+          await sleep(250);
+          continue;
+        }
+
+        const result = calculateDefenseFulls(data);
+        const coord = item.coord || data.coord;
+
+        if (!coord || !result || result.ownFull == null || result.supportFull == null) {
+          failed++;
+          await sleep(250);
+          continue;
+        }
+
+        defenseResults[coord] = result;
+        ok++;
+
+        draw();
+
+        setDefenseStatus(
+          'Mapeando defesa "Ataque a caminho" ' +
+          (i + 1) +
+          "/" +
+          villages.length +
+          " | OK: " +
+          coord
+        );
+
+        if (defenseMappingCancelled) {
+          break;
+        }
+
+        await sleep(DEFENSE_FETCH_DELAY);
+      } catch (err) {
+        failed++;
+        console.error('Erro ao mapear defesa do grupo "Ataque a caminho":', item, err);
+      }
+    }
+
+    defenseMappingInProgress = false;
+    w.__twm_defense_cancel = null;
+    w.__twm_defense_mapping_timer = null;
+    updateDefenseButtons();
+    updateDefenseInfo();
+    draw();
+
+    if (defenseMappingCancelled) {
+      setDefenseStatus(
+        'Mapeamento de defesa cancelado. Grupo "Ataque a caminho" | OK: ' +
+        ok +
+        " | Falhas: " +
+        failed
+      );
+    } else {
+      setDefenseStatus(
+        'Mapeamento de defesa concluído. Grupo "Ataque a caminho" | OK: ' +
         ok +
         " | Falhas: " +
         failed
@@ -3573,10 +3648,7 @@
         "</div>" +
         '<div class="twm_section" style="margin-bottom:8px;">' +
           '<div class="twm_section_title" style="font-weight:bold;margin-bottom:4px;border-bottom:1px solid #7d510f;padding-bottom:2px;">Ataques</div>' +
-          '<label style="display:block;margin-bottom:4px;font-size:11px;">Mapear: ' +
-            '<select id="twm_attack_target_select" style="max-width:180px;margin-left:2px;"></select>' +
-          "</label>" +
-          '<button id="twm_map_attacks">Mapear ataques</button> ' +
+          '<button id="twm_map_native_incoming_attacks">Mapear grupo "Ataque a caminho"</button> ' +
           '<button id="twm_cancel_attack" disabled>Cancelar mapeamento</button> ' +
           '<button id="twm_clear_attack">Limpar ataques</button>' +
           '<div id="twm_attack_legend" style="margin-top:5px;font-size:11px;line-height:14px;color:#333;">' +
@@ -3665,8 +3737,8 @@
       cancelAttackMapping();
     };
 
-    document.getElementById("twm_map_attacks").onclick = function () {
-      mapAttacksForSelectedTarget();
+    document.getElementById("twm_map_native_incoming_attacks").onclick = function () {
+      mapAttacksFromNativeIncomingGroup();
     };
 
     document.getElementById("twm_clear_attack").onclick = function () {
@@ -3674,7 +3746,6 @@
     };
 
     refreshDefenseGroupSelect();
-    refreshAttackTargetSelect();
 
     document.getElementById("twm_close_all").onclick = function () {
       if (w.__twm_defense_cancel) {
@@ -4005,7 +4076,6 @@
     updateDefenseButtons();
     updateAttackButtons();
     refreshDefenseGroupSelect();
-    refreshAttackTargetSelect();
   }
 
   w.__twm_click_listener = function (event) {
