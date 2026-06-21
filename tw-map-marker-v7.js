@@ -34,16 +34,6 @@
     w.__twm_click_listener = null;
   }
 
-  if (w.__twm_defense_hover_listener) {
-    document.removeEventListener("mouseover", w.__twm_defense_hover_listener, true);
-    w.__twm_defense_hover_listener = null;
-  }
-
-  if (w.__twm_defense_mouseout_listener) {
-    document.removeEventListener("mouseout", w.__twm_defense_mouseout_listener, true);
-    w.__twm_defense_mouseout_listener = null;
-  }
-
   if (w.__twm_defense_capture_timer) {
     clearTimeout(w.__twm_defense_capture_timer);
     w.__twm_defense_capture_timer = null;
@@ -66,12 +56,6 @@
   let defenseResults = {};
   let defenseMappingCancelled = false;
   let defenseMappingInProgress = false;
-
-  let captureDefenseMode = false;
-  let captureDefenseLastVillageId = null;
-  let captureDefenseTimer = null;
-
-  const CAPTURE_DEFENSE_DELAY = 350;
 
   const ICON_PRESETS = [
     { label: "Sem ícone", value: "", src: "" },
@@ -331,68 +315,6 @@
       target[unit] += parseIntSafe(source && source[unit]);
     });
     return target;
-  }
-
-  function getVisibleVillages() {
-    const list = [];
-
-    Object.entries(w.TWMap.villages || {}).forEach(function (entry) {
-      const key = entry[0];
-      const village = entry[1];
-
-      if (!village || !village.id) {
-        return;
-      }
-
-      const img = document.getElementById("map_village_" + village.id);
-
-      if (!img) {
-        return;
-      }
-
-      list.push({
-        village: village,
-        coord: coordText(key),
-        key: key,
-        img: img
-      });
-    });
-
-    return list;
-  }
-
-  function isOwnVillage(village) {
-    const playerId = getPlayerId();
-
-    if (!playerId || !village) {
-      return false;
-    }
-
-    const pid = String(playerId);
-
-    if (
-      String(village.player_id) === pid ||
-      String(village.player) === pid ||
-      String(village.owner_id) === pid
-    ) {
-      return true;
-    }
-
-    if (village.owner) {
-      if (String(village.owner.id) === pid || String(village.owner) === pid) {
-        return true;
-      }
-    }
-
-    const gdVillages = w.game_data && w.game_data.villages;
-
-    if (gdVillages && typeof gdVillages === "object" && !Array.isArray(gdVillages)) {
-      if (gdVillages[village.id] || gdVillages[String(village.id)]) {
-        return true;
-      }
-    }
-
-    return false;
   }
 
   function parseUnitsFromUnitItems(root) {
@@ -715,15 +637,6 @@
     container.appendChild(span);
   }
 
-  function applyDefenseResult(coord, result) {
-    if (!result || result.ownFull == null || result.supportFull == null) {
-      return;
-    }
-
-    defenseResults[coord] = result;
-    draw();
-  }
-
   function countDefenseResults() {
     return Object.keys(defenseResults).length;
   }
@@ -736,7 +649,7 @@
 
   function updateDefenseButtons() {
     const cancelBtn = document.getElementById("twm_cancel_defense");
-    const mapBtn = document.getElementById("twm_map_defense");
+    const mapBtn = document.getElementById("twm_map_group_defense");
 
     if (cancelBtn) {
       cancelBtn.disabled = !defenseMappingInProgress;
@@ -744,6 +657,43 @@
 
     if (mapBtn) {
       mapBtn.disabled = defenseMappingInProgress;
+    }
+  }
+
+  function refreshDefenseGroupSelect() {
+    const select = document.getElementById("twm_defense_group_select");
+
+    if (!select) {
+      return;
+    }
+
+    const currentValue = select.value;
+
+    select.innerHTML = "";
+
+    const groupEntries = Object.values(groups);
+
+    if (!groupEntries.length) {
+      const opt = document.createElement("option");
+
+      opt.value = "";
+      opt.textContent = "Nenhum grupo";
+      select.appendChild(opt);
+      return;
+    }
+
+    groupEntries.forEach(function (group) {
+      const opt = document.createElement("option");
+
+      opt.value = group.id;
+      opt.textContent = group.name + " (" + Object.keys(group.coords || {}).length + ")";
+      select.appendChild(opt);
+    });
+
+    if (currentValue && groups[currentValue]) {
+      select.value = currentValue;
+    } else if (activeGroupId && groups[activeGroupId]) {
+      select.value = activeGroupId;
     }
   }
 
@@ -845,251 +795,136 @@
     });
   }
 
-  function mapVisibleDefense() {
+  function sleep(ms) {
+    return delay(ms);
+  }
+
+  async function mapDefenseForSelectedGroup() {
     if (defenseMappingInProgress) {
       setStatus("Mapeamento de defesa já em andamento.", true);
       return;
     }
 
-    const visible = getVisibleVillages().filter(function (item) {
-      return isOwnVillage(item.village);
-    });
+    const select = document.getElementById("twm_defense_group_select");
+    const groupId = select ? select.value : "";
+    const group = groupId ? groups[groupId] : null;
 
-    if (!visible.length) {
-      setStatus("Nenhuma aldeia própria visível no mapa.", true);
+    if (!group) {
+      setStatus("Selecione um grupo para mapear defesa.", true);
+      return;
+    }
+
+    await mapDefenseForGroup(group);
+  }
+
+  async function mapDefenseForGroup(group) {
+    if (!group || !group.coords) {
+      setStatus("Grupo inválido para mapear defesa.", true);
+      return;
+    }
+
+    const coords = Object.keys(group.coords);
+
+    if (!coords.length) {
+      setStatus("O grupo " + group.name + " não tem aldeias.", true);
       return;
     }
 
     defenseMappingCancelled = false;
     defenseMappingInProgress = true;
     updateDefenseButtons();
-
     w.__twm_defense_cancel = cancelDefenseMapping;
 
-    setStatus("Mapeando defesa de " + visible.length + " aldeia(s)...");
+    let mapped = 0;
+    let skipped = 0;
+    let failed = 0;
 
-    (function process(index, stats) {
+    setStatus("Mapeando defesa do grupo " + group.name + "...");
+
+    for (let i = 0; i < coords.length; i++) {
       if (defenseMappingCancelled) {
-        return;
+        break;
       }
 
-      if (index >= visible.length) {
-        defenseMappingInProgress = false;
-        defenseMappingCancelled = false;
-        w.__twm_defense_cancel = null;
-        w.__twm_defense_mapping_timer = null;
-        updateDefenseButtons();
-        updateDefenseInfo();
-        setStatus(stats.mapped + " aldeia(s) mapeada(s) com defesa.");
-        return;
+      const coord = coords[i];
+      const village = w.TWMap.villages[keyOf(coord)];
+
+      if (!village || !village.id) {
+        skipped++;
+        setStatus(
+          "Mapeando " + group.name + " " + (i + 1) + "/" + coords.length +
+          " | fora da área visível: " + coord
+        );
+        continue;
       }
 
-      const item = visible[index];
-
-      setStatus("Mapeando defesa " + (index + 1) + "/" + visible.length + ": " + item.coord + "...");
-
-      getVillageDefenseData(item.village).then(function (raw) {
-        if (defenseMappingCancelled) {
-          return;
-        }
-
-        if (raw) {
-          const result = calculateDefenseFulls(raw);
-
-          if (result.ownFull != null && result.supportFull != null) {
-            defenseResults[item.coord] = result;
-            stats.mapped += 1;
-            draw();
-          }
-        }
+      try {
+        const data = await getVillageDefenseData(village);
 
         if (defenseMappingCancelled) {
-          return;
+          break;
         }
 
-        return delay(DEFENSE_FETCH_DELAY);
-      }).catch(function () {
+        if (!data || !canSeparateDefenseData(data)) {
+          failed++;
+          setStatus(
+            "Sem dados separados em " + coord + " (" + (i + 1) + "/" + coords.length + ")"
+          );
+          continue;
+        }
+
+        const result = calculateDefenseFulls(data);
+
+        if (!result || result.ownFull == null || result.supportFull == null) {
+          failed++;
+          continue;
+        }
+
+        defenseResults[coord] = result;
+        mapped++;
+        draw();
+
+        setStatus(
+          "Mapeando " + group.name + " " + (i + 1) + "/" + coords.length + " | OK: " + coord
+        );
+
         if (defenseMappingCancelled) {
-          return;
+          break;
         }
 
-        return delay(DEFENSE_FETCH_DELAY);
-      }).then(function () {
-        if (defenseMappingCancelled) {
-          return;
-        }
+        await sleep(DEFENSE_FETCH_DELAY);
+      } catch (err) {
+        failed++;
+        console.error("Erro ao mapear defesa do grupo:", coord, err);
+      }
+    }
 
-        w.__twm_defense_mapping_timer = setTimeout(function () {
-          process(index + 1, stats);
-        }, 0);
-      });
-    })(0, { mapped: 0 });
+    defenseMappingInProgress = false;
+    w.__twm_defense_cancel = null;
+    w.__twm_defense_mapping_timer = null;
+    updateDefenseButtons();
+    updateDefenseInfo();
+    draw();
+
+    if (defenseMappingCancelled) {
+      setStatus(
+        "Mapeamento cancelado. Grupo: " + group.name +
+        " | OK: " + mapped +
+        " | Falhas: " + failed +
+        " | Fora da tela: " + skipped
+      );
+    } else {
+      setStatus(
+        "Mapeamento concluído. Grupo: " + group.name +
+        " | OK: " + mapped +
+        " | Falhas: " + failed +
+        " | Fora da tela: " + skipped
+      );
+    }
   }
 
   function canSeparateDefenseData(data) {
     return !!(data && data.ownUnits && data.supportUnits);
-  }
-
-  function getVisibleVillagePopupHtml() {
-    const candidates = [
-      "#tooltip",
-      ".tooltip",
-      ".popup",
-      ".village_popup",
-      ".map_popup",
-      "#map_popup",
-      ".ui-tooltip",
-      ".tw-tooltip"
-    ];
-
-    for (let i = 0; i < candidates.length; i++) {
-      const elements = Array.from(document.querySelectorAll(candidates[i]));
-
-      for (let j = 0; j < elements.length; j++) {
-        const el = elements[j];
-        const rect = el.getBoundingClientRect();
-        const style = getComputedStyle(el);
-
-        const visible =
-          rect.width > 0 &&
-          rect.height > 0 &&
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          Number(style.opacity || 1) !== 0;
-
-        if (visible && el.innerText && el.innerText.trim().length > 0) {
-          return el.innerHTML;
-        }
-      }
-    }
-
-    const keywords = /Pontos|Proprietário|Proprietario|Tropas|Points|Owner|Units|Aldeia|Village/i;
-    const all = Array.from(document.querySelectorAll("body *")).filter(function (el) {
-      const text = el.innerText || "";
-
-      if (!keywords.test(text)) {
-        return false;
-      }
-
-      const rect = el.getBoundingClientRect();
-      const style = getComputedStyle(el);
-
-      return (
-        rect.width > 100 &&
-        rect.height > 40 &&
-        style.display !== "none" &&
-        style.visibility !== "hidden"
-      );
-    });
-
-    if (all.length) {
-      all.sort(function (a, b) {
-        const areaA = a.getBoundingClientRect().width * a.getBoundingClientRect().height;
-        const areaB = b.getBoundingClientRect().width * b.getBoundingClientRect().height;
-        return areaB - areaA;
-      });
-
-      return all[0].innerHTML;
-    }
-
-    return "";
-  }
-
-  function getVillageDefenseDataFromPopupHtml(html) {
-    if (!html) {
-      return null;
-    }
-
-    const fromWithdraw = parsePlaceWithdrawHtml(html);
-
-    if (fromWithdraw) {
-      return fromWithdraw;
-    }
-
-    const json = tryParseJson(html);
-
-    if (json) {
-      const fromJson = parseMapInfoPayload(json);
-
-      if (fromJson) {
-        return fromJson;
-      }
-    }
-
-    const fromMap = parseMapInfoPayload(html);
-
-    if (fromMap) {
-      return fromMap;
-    }
-
-    const doc = document.createElement("div");
-    doc.innerHTML = html;
-    const text = (doc.textContent || "").toLowerCase();
-
-    if (/support|apoio|terceir|aliad|own|pr[oó]pri|presentes|eigen|steun|fremd/.test(text)) {
-      return parseInfoVillageHtml(html);
-    }
-
-    const units = parseUnitsFromUnitItems(doc);
-
-    if (Object.values(units).some(function (v) { return v > 0; })) {
-      return null;
-    }
-
-    return null;
-  }
-
-  function captureDefenseForVillage(coord, village) {
-    let data = null;
-    const popupHtml = getVisibleVillagePopupHtml();
-
-    if (popupHtml) {
-      data = getVillageDefenseDataFromPopupHtml(popupHtml);
-    }
-
-    function finishCapture(raw) {
-      if (!canSeparateDefenseData(raw)) {
-        setStatus("Não foi possível capturar defesa em " + coord + ".", true);
-        captureDefenseLastVillageId = null;
-        return;
-      }
-
-      const result = calculateDefenseFulls(raw);
-
-      if (!result || result.ownFull === null || result.supportFull === null) {
-        setStatus("Defesa incompleta em " + coord + ".", true);
-        captureDefenseLastVillageId = null;
-        return;
-      }
-
-      applyDefenseResult(coord, result);
-      setStatus(
-        "Defesa capturada em " + coord + ": " + formatDefenseTitle(result)
-      );
-    }
-
-    if (canSeparateDefenseData(data)) {
-      finishCapture(data);
-      return;
-    }
-
-    getVillageDefenseData(village).then(function (raw) {
-      finishCapture(raw);
-    }).catch(function () {
-      setStatus("Não foi possível capturar defesa em " + coord + ".", true);
-      captureDefenseLastVillageId = null;
-    });
-  }
-
-  function updateCaptureDefenseButton() {
-    const btn = document.getElementById("twm_capture_defense");
-
-    if (!btn) {
-      return;
-    }
-
-    btn.textContent = "Capturar defesa: " + (captureDefenseMode ? "ON" : "OFF");
-    btn.style.fontWeight = captureDefenseMode ? "bold" : "normal";
   }
 
   function getEffectiveIcon(group) {
@@ -1461,9 +1296,11 @@
         "</div>" +
         '<div class="twm_section" style="margin-bottom:8px;">' +
           '<div class="twm_section_title" style="font-weight:bold;margin-bottom:4px;border-bottom:1px solid #7d510f;padding-bottom:2px;">Defesa</div>' +
-          '<button id="twm_map_defense">Mapear defesa</button> ' +
+          '<label style="display:block;margin-bottom:4px;font-size:11px;">Grupo defesa: ' +
+            '<select id="twm_defense_group_select" style="max-width:180px;margin-left:2px;"></select>' +
+          "</label>" +
+          '<button id="twm_map_group_defense">Mapear defesa do grupo</button> ' +
           '<button id="twm_cancel_defense" disabled>Cancelar defesa</button> ' +
-          '<button id="twm_capture_defense">Capturar defesa: OFF</button> ' +
           '<button id="twm_clear_defense">Limpar defesa</button>' +
           '<div id="twm_defense_legend" style="margin-top:5px;font-size:11px;line-height:14px;color:#333;">' +
             "<div><b>P</b> = Full defesa próprio na aldeia</div>" +
@@ -1535,64 +1372,20 @@
       cancelDefenseMapping();
     };
 
-    document.getElementById("twm_capture_defense").onclick = function () {
-      captureDefenseMode = !captureDefenseMode;
-      updateCaptureDefenseButton();
-
-      if (captureDefenseMode) {
-        captureDefenseLastVillageId = null;
-        setStatus("Captura de defesa ativada. Passe o mouse sobre suas aldeias.");
-      } else {
-        if (captureDefenseTimer) {
-          clearTimeout(captureDefenseTimer);
-          captureDefenseTimer = null;
-        }
-
-        if (w.__twm_defense_capture_timer) {
-          clearTimeout(w.__twm_defense_capture_timer);
-          w.__twm_defense_capture_timer = null;
-        }
-
-        captureDefenseLastVillageId = null;
-        setStatus("Captura de defesa desativada.");
-      }
-    };
-
-    document.getElementById("twm_map_defense").onclick = function () {
-      mapVisibleDefense();
+    document.getElementById("twm_map_group_defense").onclick = function () {
+      mapDefenseForSelectedGroup();
     };
 
     document.getElementById("twm_clear_defense").onclick = function () {
       clearAllDefense();
     };
 
+    refreshDefenseGroupSelect();
+
     document.getElementById("twm_close_all").onclick = function () {
       if (w.__twm_defense_cancel) {
         w.__twm_defense_cancel();
         w.__twm_defense_cancel = null;
-      }
-
-      captureDefenseMode = false;
-      captureDefenseLastVillageId = null;
-
-      if (captureDefenseTimer) {
-        clearTimeout(captureDefenseTimer);
-        captureDefenseTimer = null;
-      }
-
-      if (w.__twm_defense_capture_timer) {
-        clearTimeout(w.__twm_defense_capture_timer);
-        w.__twm_defense_capture_timer = null;
-      }
-
-      if (w.__twm_defense_hover_listener) {
-        document.removeEventListener("mouseover", w.__twm_defense_hover_listener, true);
-        w.__twm_defense_hover_listener = null;
-      }
-
-      if (w.__twm_defense_mouseout_listener) {
-        document.removeEventListener("mouseout", w.__twm_defense_mouseout_listener, true);
-        w.__twm_defense_mouseout_listener = null;
       }
 
       defenseMappingInProgress = false;
@@ -1912,6 +1705,7 @@
 
     updateDefenseInfo();
     updateDefenseButtons();
+    refreshDefenseGroupSelect();
   }
 
   w.__twm_click_listener = function (event) {
@@ -1961,87 +1755,6 @@
   };
 
   document.addEventListener("click", w.__twm_click_listener, true);
-
-  w.__twm_defense_hover_listener = function (event) {
-    if (!captureDefenseMode) {
-      return;
-    }
-
-    if (event.target.closest(".twm_panel, .twm_main_panel")) {
-      return;
-    }
-
-    const img = event.target.closest('img[id^="map_village_"]');
-
-    if (!img) {
-      return;
-    }
-
-    const villageId = img.id.replace("map_village_", "");
-
-    if (captureDefenseLastVillageId === villageId) {
-      return;
-    }
-
-    const coord = findCoordByVillageId(villageId);
-
-    if (!coord || !w.TWMap.villages[keyOf(coord)]) {
-      return;
-    }
-
-    const village = w.TWMap.villages[keyOf(coord)];
-
-    if (!isOwnVillage(village)) {
-      return;
-    }
-
-    captureDefenseLastVillageId = villageId;
-
-    if (captureDefenseTimer) {
-      clearTimeout(captureDefenseTimer);
-    }
-
-    if (w.__twm_defense_capture_timer) {
-      clearTimeout(w.__twm_defense_capture_timer);
-    }
-
-    captureDefenseTimer = setTimeout(function () {
-      if (!captureDefenseMode) {
-        return;
-      }
-
-      captureDefenseForVillage(coord, village);
-    }, CAPTURE_DEFENSE_DELAY);
-
-    w.__twm_defense_capture_timer = captureDefenseTimer;
-  };
-
-  w.__twm_defense_mouseout_listener = function (event) {
-    if (!captureDefenseMode) {
-      return;
-    }
-
-    const img = event.target.closest('img[id^="map_village_"]');
-
-    if (!img) {
-      return;
-    }
-
-    const related = event.relatedTarget;
-
-    if (related && img.contains(related)) {
-      return;
-    }
-
-    const villageId = img.id.replace("map_village_", "");
-
-    if (captureDefenseLastVillageId === villageId) {
-      captureDefenseLastVillageId = null;
-    }
-  };
-
-  document.addEventListener("mouseover", w.__twm_defense_hover_listener, true);
-  document.addEventListener("mouseout", w.__twm_defense_mouseout_listener, true);
 
   w.__twm_fullscreen_listener = function () {
     setTimeout(function () {
