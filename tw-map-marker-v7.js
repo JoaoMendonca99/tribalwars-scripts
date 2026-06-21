@@ -464,15 +464,11 @@
     const out = [];
 
     list.forEach(function (v) {
-      if (!v) {
+      if (!v || !v.coord) {
         return;
       }
 
-      if (!v.coord && !v.villageId) {
-        return;
-      }
-
-      const key = v.coord ? "coord:" + v.coord : "id:" + v.villageId;
+      const key = "coord:" + v.coord;
 
       if (seen[key]) {
         return;
@@ -481,7 +477,7 @@
       seen[key] = true;
       out.push({
         villageId: v.villageId ? String(v.villageId) : "",
-        coord: v.coord || "",
+        coord: v.coord,
         name: v.name || ""
       });
     });
@@ -583,42 +579,35 @@
     const doc = typeof DOMParser !== "undefined"
       ? new DOMParser().parseFromString(String(html || ""), "text/html")
       : parseHtmlDoc(html);
-    const villages = [];
     const tables = Array.from(doc.querySelectorAll("table"));
     let resultTable = null;
 
     for (let t = 0; t < tables.length; t++) {
       const table = tables[t];
-      const text = table.innerText || "";
-      const hasVillageHeader = /Aldeia\s*\(\d+\s*resultado/i.test(text) || /\bAldeia\b/i.test(text);
-      const hasPointsHeader = /\bPontos\b/i.test(text);
-      const hasGroupsHeader = /\bGrupos\b/i.test(text);
+      const text = (table.innerText || "").replace(/\s+/g, " ").trim();
 
-      if (hasVillageHeader && hasPointsHeader && hasGroupsHeader) {
+      if (/Aldeia\s*\(\d+\)/i.test(text) && /\bPontos\b/i.test(text)) {
         resultTable = table;
         break;
       }
     }
 
     if (!resultTable) {
-      console.warn("[NativeGroupParser] tabela de resultados não encontrada");
+      console.warn("[NativeGroupParser] tabela Aldeia(N) não encontrada");
       return [];
     }
 
-    const rows = Array.from(resultTable.querySelectorAll("tr"));
+    const villages = [];
 
-    rows.forEach(function (tr) {
-      if (tr.querySelector("th")) {
-        return;
-      }
-
-      const rowText = (tr.innerText || tr.textContent || "").trim();
+    Array.from(resultTable.querySelectorAll("tr")).forEach(function (tr) {
+      const rowText = (tr.innerText || "").replace(/\s+/g, " ").trim();
+      const rowHtml = tr.innerHTML || "";
 
       if (!rowText) {
         return;
       }
 
-      if (/^Aldeia/i.test(rowText) || /^Pontos/i.test(rowText)) {
+      if (/^Aldeia\s*\(/i.test(rowText)) {
         return;
       }
 
@@ -629,24 +618,22 @@
       }
 
       const coord = coordMatch[1] + "|" + coordMatch[2];
-      const links = Array.from(tr.querySelectorAll('a[href*="village="]'));
       let villageId = "";
       let name = "";
+      const links = Array.from(tr.querySelectorAll('a[href*="village="]'));
 
       for (let i = 0; i < links.length; i++) {
         const a = links[i];
         const href = a.getAttribute("href") || "";
-        const text = (a.innerText || a.textContent || "").trim();
+        const linkText = (a.innerText || a.textContent || "").replace(/\s+/g, " ").trim();
         const m = href.match(/[?&]village=(\d+)/);
 
-        if (m) {
+        if (m && !villageId) {
           villageId = m[1];
         }
 
-        if (text && text.indexOf(coord) !== -1) {
-          name = text;
-        } else if (text && !name && /\d{3}\|\d{3}/.test(text)) {
-          name = text;
+        if (linkText && linkText.indexOf(coord) !== -1) {
+          name = linkText;
         }
 
         if (villageId && name) {
@@ -654,8 +641,16 @@
         }
       }
 
+      if (!villageId) {
+        const hrefMatch = rowHtml.match(/[?&]village=(\d+)/);
+
+        if (hrefMatch) {
+          villageId = hrefMatch[1];
+        }
+      }
+
       if (!name) {
-        name = rowText.split(/\s{2,}/)[0] || rowText.slice(0, 80);
+        name = rowText.slice(0, 100);
       }
 
       villages.push({
@@ -665,7 +660,28 @@
       });
     });
 
-    return dedupeVillageRefs(villages);
+    const deduped = dedupeVillageRefs(villages);
+    const tableText = (resultTable.innerText || "").replace(/\s+/g, " ").trim();
+    const expectedMatch = tableText.match(/Aldeia\s*\((\d+)\)/i);
+    const expectedCount = expectedMatch ? Number(expectedMatch[1]) : null;
+
+    if (DEBUG_NATIVE_GROUPS) {
+      console.log("[NativeGroupParser]", {
+        expectedCount: expectedCount,
+        parsedCount: deduped.length,
+        villages: deduped
+      });
+    }
+
+    if (expectedCount != null && expectedCount !== deduped.length) {
+      console.warn("[NativeGroupParser] count divergente", {
+        expectedCount: expectedCount,
+        parsedCount: deduped.length,
+        villages: deduped
+      });
+    }
+
+    return deduped;
   }
 
   async function fetchOverviewVillages(mode) {
@@ -995,17 +1011,17 @@
 
     if (currentVillageId) {
       urls.push(
-        "/game.php?village=" + currentVillageId + "&screen=overview_villages&mode=groups&group=" + encodeURIComponent(groupId),
         "/game.php?village=" + currentVillageId + "&screen=overview_villages&mode=combined&group=" + encodeURIComponent(groupId),
-        "/game.php?village=" + currentVillageId + "&screen=overview_villages&mode=groups&group_id=" + encodeURIComponent(groupId),
-        "/game.php?village=" + currentVillageId + "&screen=overview_villages&mode=combined&group_id=" + encodeURIComponent(groupId)
+        "/game.php?village=" + currentVillageId + "&screen=overview_villages&mode=combined&group_id=" + encodeURIComponent(groupId),
+        "/game.php?village=" + currentVillageId + "&screen=overview_villages&mode=groups&group=" + encodeURIComponent(groupId),
+        "/game.php?village=" + currentVillageId + "&screen=overview_villages&mode=groups&group_id=" + encodeURIComponent(groupId)
       );
     } else {
       urls.push(
-        buildOverviewVillagesUrl("groups") + "&group=" + encodeURIComponent(groupId),
         buildOverviewVillagesUrlWithGroup("combined", groupId),
-        buildOverviewVillagesUrl("groups") + "&group_id=" + encodeURIComponent(groupId),
-        buildOverviewVillagesUrl("combined") + "&group_id=" + encodeURIComponent(groupId)
+        buildOverviewVillagesUrl("combined") + "&group_id=" + encodeURIComponent(groupId),
+        buildOverviewVillagesUrl("groups") + "&group=" + encodeURIComponent(groupId),
+        buildOverviewVillagesUrl("groups") + "&group_id=" + encodeURIComponent(groupId)
       );
     }
 
