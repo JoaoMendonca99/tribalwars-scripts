@@ -72,6 +72,22 @@
   let attackMappingCancelled = false;
   let attackMappingInProgress = false;
 
+  let attackerSourceResults = {};
+
+  const ATTACKERS_GROUP_ID = "system_attackers";
+
+  const ATTACK_RISK_COLORS = {
+    scout: "#00bfff",
+    aguardando: "#808080",
+    incerto: "#808080",
+    baixo: "#ffd000",
+    medio: "#ff8c00",
+    alto: "#ff0000",
+    critico: "#8a00ff"
+  };
+
+  const ATTACK_ALL_VISIBLE = "__all_visible__";
+
   const ICON_PRESETS = [
     { label: "Sem ícone", value: "", src: "" },
     { label: "Lança", value: "spear", src: "/graphic/unit_map/spear.png" },
@@ -318,6 +334,72 @@
 
   function getPlayerId() {
     return w.game_data && w.game_data.player ? w.game_data.player.id : null;
+  }
+
+  function isOwnVillage(village) {
+    const playerId = getPlayerId();
+
+    if (!playerId || !village) {
+      return false;
+    }
+
+    const pid = String(playerId);
+
+    if (
+      String(village.player_id) === pid ||
+      String(village.player) === pid ||
+      String(village.owner_id) === pid
+    ) {
+      return true;
+    }
+
+    if (village.owner) {
+      if (String(village.owner.id) === pid || String(village.owner) === pid) {
+        return true;
+      }
+    }
+
+    const gdVillages = w.game_data && w.game_data.villages;
+
+    if (gdVillages && typeof gdVillages === "object" && !Array.isArray(gdVillages)) {
+      if (gdVillages[village.id] || gdVillages[String(village.id)]) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function getVisibleOwnVillagesForAttackMapping() {
+    const result = [];
+    const seen = {};
+
+    Array.from(document.querySelectorAll('img[id^="map_village_"]')).forEach(function (img) {
+      const villageId = img.id.replace("map_village_", "");
+      const coord = findCoordByVillageId(villageId);
+
+      if (!coord || seen[coord]) {
+        return;
+      }
+
+      const village = w.TWMap.villages[keyOf(coord)];
+
+      if (!village || !village.id) {
+        return;
+      }
+
+      if (!isOwnVillage(village)) {
+        return;
+      }
+
+      seen[coord] = 1;
+      result.push({
+        coord: coord,
+        village: village
+      });
+    });
+
+    return result;
   }
 
   function parseIntSafe(value) {
@@ -567,16 +649,35 @@
       large: 0,
       unknown: 0,
       willBeDetectedByTower: 0,
-      notDetectedByTower: 0
+      notDetectedByTower: 0,
+      towerPending: 0,
+      detectedRealAttack: 0
     };
   }
 
   function mergeAttackRow(target, row) {
     target.total += row.total || 0;
 
-    ["scout", "noble", "ram", "catapult", "small", "medium", "large", "unknown", "willBeDetectedByTower", "notDetectedByTower"].forEach(function (key) {
+    [
+      "scout", "noble", "ram", "catapult", "small", "medium", "large", "unknown",
+      "willBeDetectedByTower", "notDetectedByTower", "towerPending", "detectedRealAttack"
+    ].forEach(function (key) {
       target[key] += row[key] || 0;
     });
+  }
+
+  function isNotDetectedByTowerText(text) {
+    return /n[aã]o ser[aá] detectad|nao sera detectad|não será detectad|nicht.*erkannt|not be detected|won't be detected|nao.*detectad/.test(text);
+  }
+
+  function isTowerPendingText(text) {
+    if (isNotDetectedByTowerText(text)) {
+      return false;
+    }
+
+    return (
+      /ser[aá] detectad|sera detectad|será detectad|will be detected|wird.*erkannt|detected by the watch|detectado pela torre|ataque ser[aá] detectad|torre de vigia/.test(text)
+    );
   }
 
   function isIncomingCommandRow(row) {
@@ -602,35 +703,162 @@
     }).join(" ").toLowerCase();
 
     const text = (row.textContent || "").toLowerCase();
-    const hay = imgs + " " + text;
+    const imgTitles = Array.from(row.querySelectorAll("img")).map(function (img) {
+      return (img.getAttribute("title") || "") + " " + (img.getAttribute("alt") || "");
+    }).join(" ").toLowerCase();
 
-    if (/spy|explorador|scout|spion|verkenner|unit_map\/spy/.test(hay)) {
+    const hay = imgs + " " + text;
+    const fullText = text + " " + imgTitles;
+
+    if (isNotDetectedByTowerText(fullText)) {
+      counts.notDetectedByTower += 1;
+
+      if (/spy|explorador|scout|spion|verkenner|unit_map\/spy|unit\/spy/.test(hay)) {
+        counts.scout += 1;
+      } else {
+        counts.unknown += 1;
+      }
+
+      return counts;
+    }
+
+    if (isTowerPendingText(fullText)) {
+      counts.towerPending += 1;
+      counts.willBeDetectedByTower += 1;
+      return counts;
+    }
+
+    if (/spy|explorador|scout|spion|verkenner|unit_map\/spy|unit\/spy/.test(hay)) {
       counts.scout += 1;
-    } else if (/snob|nobre|adel|fürst|prince|unit_map\/snob/.test(hay)) {
+      return counts;
+    }
+
+    if (/snob|nobre|adel|fürst|prince|unit_map\/snob|unit\/snob/.test(hay)) {
       counts.noble += 1;
-    } else if (/\bram\b|ariete|sturmramme|ramme|unit_map\/ram/.test(hay)) {
+      counts.detectedRealAttack += 1;
+    } else if (/\bram\b|ariete|sturmramme|ramme|unit_map\/ram|unit\/ram/.test(hay)) {
       counts.ram += 1;
-    } else if (/catapult|catapulta|katapult|unit_map\/catapult/.test(hay)) {
+      counts.detectedRealAttack += 1;
+    } else if (/catapult|catapulta|katapult|unit_map\/catapult|unit\/catapult/.test(hay)) {
       counts.catapult += 1;
+      counts.detectedRealAttack += 1;
     } else if (/attack_small|ataque pequeno|kleiner angriff|small attack|pequeno/.test(hay)) {
       counts.small += 1;
+      counts.detectedRealAttack += 1;
     } else if (/attack_medium|ataque m[ée]dio|medium attack|mittlerer|medio/.test(hay)) {
       counts.medium += 1;
+      counts.detectedRealAttack += 1;
     } else if (/attack_large|ataque grande|large attack|gro[ßs]er angriff|grande/.test(hay)) {
       counts.large += 1;
+      counts.detectedRealAttack += 1;
     } else if (/attack|ataque|angriff|graphic\/command\/attack|graphic\/unit\/att/.test(hay)) {
       counts.unknown += 1;
     } else {
       counts.unknown += 1;
     }
 
-    if (/n[aã]o ser[aá] detectad|nao sera detectad|nicht.*erkannt|not be detected|won't be detected|nao.*detectad/.test(text)) {
-      counts.notDetectedByTower += 1;
-    } else if (/ser[aá] detectad|sera detectad|will be detected|wird.*erkannt|detected by the watch/.test(text)) {
-      counts.willBeDetectedByTower += 1;
+    return counts;
+  }
+
+  function getPrimaryAttackType(counts) {
+    if (counts.scout > 0) {
+      return "scout";
     }
 
-    return counts;
+    if (counts.noble > 0) {
+      return "noble";
+    }
+
+    if (counts.ram > 0) {
+      return "ram";
+    }
+
+    if (counts.catapult > 0) {
+      return "catapult";
+    }
+
+    if (counts.large > 0) {
+      return "large";
+    }
+
+    if (counts.medium > 0) {
+      return "medium";
+    }
+
+    if (counts.small > 0) {
+      return "small";
+    }
+
+    return "unknown";
+  }
+
+  function extractOriginCoordFromIncomingRow(rowText, rowHtml, targetCoord) {
+    const targetKey = keyOf(targetCoord);
+    const text = String(rowText || "");
+    const html = String(rowHtml || "");
+    const found = [];
+
+    function pushCoord(x, y) {
+      const coord = x + "|" + y;
+
+      if (keyOf(coord) !== targetKey) {
+        found.push(coord);
+      }
+    }
+
+    const originPatterns = [
+      /origin[^(\[]*\(\s*(\d{3})\s*\|\s*(\d{3})\s*\)/gi,
+      /origin[^\d]{0,40}(\d{3})\s*\|\s*(\d{3})/gi,
+      /herkunft[^(\[]*\(\s*(\d{3})\s*\|\s*(\d{3})\s*\)/gi
+    ];
+
+    originPatterns.forEach(function (pattern) {
+      let match;
+
+      pattern.lastIndex = 0;
+
+      while ((match = pattern.exec(text)) !== null) {
+        pushCoord(match[1], match[2]);
+      }
+    });
+
+    if (found.length) {
+      return found[0];
+    }
+
+    const coordPattern = /(\d{3})\s*\|\s*(\d{3})/g;
+    let coordMatch;
+
+    while ((coordMatch = coordPattern.exec(text)) !== null) {
+      pushCoord(coordMatch[1], coordMatch[2]);
+    }
+
+    const linkDoc = document.createElement("div");
+
+    linkDoc.innerHTML = html;
+
+    linkDoc.querySelectorAll("a").forEach(function (link) {
+      const linkText = link.textContent || "";
+      const href = link.getAttribute("href") || "";
+      const combined = linkText + " " + href;
+      let linkCoordMatch;
+
+      coordPattern.lastIndex = 0;
+
+      while ((linkCoordMatch = coordPattern.exec(combined)) !== null) {
+        pushCoord(linkCoordMatch[1], linkCoordMatch[2]);
+      }
+    });
+
+    if (found.length === 1) {
+      return found[0];
+    }
+
+    if (found.length > 1) {
+      return found[0];
+    }
+
+    return null;
   }
 
   function findIncomingAttacksTable(doc) {
@@ -696,7 +924,7 @@
     return targetTable;
   }
 
-  function parseIncomingAttacksFromHtml(html) {
+  function parseIncomingAttacksFromHtml(html, targetCoord) {
     if (!html || typeof html !== "string") {
       return null;
     }
@@ -707,7 +935,10 @@
 
     const pageText = (doc.textContent || "").toLowerCase();
     const table = findIncomingAttacksTable(doc);
-    const result = emptyAttackCounts();
+    const result = {
+      counts: emptyAttackCounts(),
+      sources: []
+    };
 
     if (!table) {
       if (/chegando|incoming|ankommend/.test(pageText)) {
@@ -726,16 +957,196 @@
         return;
       }
 
-      mergeAttackRow(result, classifyAttackRow(row));
+      const rowCounts = classifyAttackRow(row);
+
+      mergeAttackRow(result.counts, rowCounts);
+
+      if (targetCoord) {
+        const originCoord = extractOriginCoordFromIncomingRow(
+          row.textContent || "",
+          row.innerHTML || "",
+          targetCoord
+        );
+
+        if (originCoord) {
+          result.sources.push({
+            originCoord: originCoord,
+            attackType: getPrimaryAttackType(rowCounts)
+          });
+        }
+      }
     });
 
     return result;
   }
 
-  function getVillageIncomingAttacks(village) {
+  function getVillageIncomingAttacks(village, targetCoord) {
     return fetchGameUrl(buildInfoVillageUrl(village.id)).then(function (response) {
-      return parseIncomingAttacksFromHtml(response);
+      return parseIncomingAttacksFromHtml(response, targetCoord);
     });
+  }
+
+  function findAttackersGroup() {
+    for (const group of Object.values(groups)) {
+      if (group.systemType === "attackers") {
+        return group;
+      }
+    }
+
+    return null;
+  }
+
+  function getOrCreateAttackersGroup() {
+    let group = findAttackersGroup();
+
+    if (group) {
+      return group;
+    }
+
+    group = {
+      id: ATTACKERS_GROUP_ID,
+      name: "Aldeias atacantes",
+      color: "#ff0000",
+      text: "",
+      icon: "axe",
+      note: "Grupo criado automaticamente com aldeias que estão enviando ataques.",
+      coordInputDraft: "",
+      coords: {},
+      attackerCounts: {},
+      systemType: "attackers"
+    };
+
+    groups[group.id] = group;
+
+    if (!document.getElementById("twm_panel_" + group.id)) {
+      createGroupPanel(group);
+    }
+
+    refreshAllPanels();
+
+    return group;
+  }
+
+  function registerAttackerSource(originCoord, targetCoord, attackType) {
+    if (!originCoord) {
+      return;
+    }
+
+    const group = getOrCreateAttackersGroup();
+
+    group.coords[originCoord] = 1;
+
+    if (!attackerSourceResults[originCoord]) {
+      attackerSourceResults[originCoord] = {
+        coord: originCoord,
+        count: 0,
+        targets: {},
+        types: {
+          scout: 0,
+          unknown: 0,
+          noble: 0,
+          ram: 0,
+          catapult: 0,
+          large: 0,
+          medium: 0,
+          small: 0
+        }
+      };
+    }
+
+    const item = attackerSourceResults[originCoord];
+
+    item.count += 1;
+    item.targets[targetCoord] = (item.targets[targetCoord] || 0) + 1;
+
+    if (attackType && item.types[attackType] != null) {
+      item.types[attackType] += 1;
+    } else {
+      item.types.unknown += 1;
+    }
+
+    group.attackerCounts = group.attackerCounts || {};
+    group.attackerCounts[originCoord] = item.count;
+  }
+
+  function clearAttackerSourceResults() {
+    attackerSourceResults = {};
+
+    const group = findAttackersGroup();
+
+    if (group) {
+      group.coords = {};
+      group.attackerCounts = {};
+    }
+
+    document.querySelectorAll(".twm_attacker_source_mark").forEach(function (el) {
+      el.remove();
+    });
+  }
+
+  function processIncomingAttackSources(targetCoord, parsed) {
+    if (!parsed || !parsed.sources) {
+      return;
+    }
+
+    parsed.sources.forEach(function (source) {
+      registerAttackerSource(source.originCoord, targetCoord, source.attackType);
+    });
+  }
+
+  function formatAttackerSourceTitle(coord) {
+    const item = attackerSourceResults[coord];
+
+    if (!item) {
+      return coord;
+    }
+
+    const parts = [
+      "Aldeia atacante: " + coord,
+      "Ataques saindo: " + item.count,
+      "Alvos:"
+    ];
+
+    Object.keys(item.targets).forEach(function (target) {
+      parts.push(target + ": " + item.targets[target]);
+    });
+
+    parts.push("Tipos:");
+
+    Object.keys(item.types).forEach(function (type) {
+      if (item.types[type] > 0) {
+        parts.push(type + ": " + item.types[type]);
+      }
+    });
+
+    return parts.join(" | ");
+  }
+
+  function populateAttackerSourceContent(container, coord) {
+    const item = attackerSourceResults[coord];
+
+    if (!item) {
+      return;
+    }
+
+    container.innerHTML = "";
+
+    const span = document.createElement("span");
+
+    span.className = "twm_mark_attacker";
+    span.textContent = "ATK\n" + item.count;
+    span.style.cssText =
+      "font-size:8px;" +
+      "line-height:8px;" +
+      "white-space:pre-line;" +
+      "font-weight:bold;" +
+      "color:#fff;" +
+      "text-shadow:1px 1px 2px #000,-1px -1px 2px #000;" +
+      "text-align:center;" +
+      "max-width:100%;" +
+      "overflow:hidden;";
+
+    container.appendChild(span);
   }
 
   function getDefenseDataForRisk(coord) {
@@ -757,25 +1168,48 @@
       return "baixo";
     }
 
-    if (attackData.noble > 0) {
+    const scout = Number(attackData.scout || 0);
+    const noble = Number(attackData.noble || 0);
+    const large = Number(attackData.large || 0);
+    const medium = Number(attackData.medium || 0);
+    const small = Number(attackData.small || 0);
+    const unknown = Number(attackData.unknown || 0);
+    const towerPending = Number(attackData.towerPending || attackData.willBeDetectedByTower || 0);
+    const notDetectedByTower = Number(attackData.notDetectedByTower || 0);
+
+    const realAttacks = large + medium + small + noble;
+
+    if (noble > 0) {
       return "critico";
     }
 
-    if (attackData.notDetectedByTower > 0) {
+    if (notDetectedByTower > 0) {
       return "alto";
     }
 
-    if (attackData.unknown > 0) {
-      return "medio";
+    if (realAttacks === 0 && scout > 0 && unknown === 0 && towerPending === 0) {
+      return "scout";
     }
 
-    if (defenseData) {
-      const totalDefense = defenseData.totalFull;
+    if (realAttacks === 0 && towerPending > 0) {
+      return "aguardando";
+    }
+
+    if (realAttacks === 0 && unknown > 0) {
+      return "incerto";
+    }
+
+    const totalDefense = defenseData
+      ? Number(defenseData.ownFull || 0) + Number(defenseData.supportFull || 0)
+      : null;
+
+    if (totalDefense != null) {
       const attackWeight =
-        attackData.large +
-        attackData.medium * 0.5 +
-        attackData.small * 0.25 +
-        attackData.unknown;
+        large +
+        medium * 0.5 +
+        small * 0.25 +
+        unknown * 0.5 +
+        towerPending * 0.3;
 
       if (attackWeight > totalDefense * 1.5) {
         return "critico";
@@ -792,22 +1226,38 @@
       return "baixo";
     }
 
-    if (attackData.total >= 5) {
+    if (large > 0) {
       return "alto";
     }
 
-    if (attackData.total >= 2) {
+    if (medium > 0) {
       return "medio";
+    }
+
+    if (small > 0) {
+      return "baixo";
+    }
+
+    if (towerPending > 0) {
+      return "aguardando";
+    }
+
+    if (unknown > 0) {
+      return "incerto";
+    }
+
+    if (scout > 0) {
+      return "scout";
     }
 
     return "baixo";
   }
 
   function buildAttackResult(coord, rawCounts) {
-    const defenseData = getDefenseDataForRisk(coord);
+    const defenseData = defenseResults[coord] || getDefenseDataForRisk(coord);
     const result = Object.assign({}, rawCounts);
 
-    result.noDefenseData = !defenseData;
+    result.noDefenseData = !defenseData || defenseData.ownFull == null || defenseData.supportFull == null;
     result.risk = calculateAttackRisk(coord, result, defenseData);
 
     return result;
@@ -815,6 +1265,9 @@
 
   function formatRiskLabel(risk) {
     const labels = {
+      scout: "SCOUT",
+      aguardando: "TORRE",
+      incerto: "INCERTO",
       baixo: "BAIXO",
       medio: "MEDIO",
       alto: "ALTO",
@@ -826,28 +1279,25 @@
 
   function getAttackRiskColor(attack) {
     if (!attack) {
-      return "#888888";
+      return ATTACK_RISK_COLORS.incerto;
     }
 
-    if (attack.notDetectedByTower > 0 && attack.risk !== "critico") {
-      return "#660000";
-    }
-
-    if (attack.willBeDetectedByTower > 0 && attack.unknown > 0 && attack.risk === "medio") {
-      return "#888888";
-    }
-
-    const colors = {
-      baixo: "#e6c200",
-      medio: "#ff8800",
-      alto: "#cc0000",
-      critico: "#9900cc"
-    };
-
-    return colors[attack.risk] || "#888888";
+    return ATTACK_RISK_COLORS[attack.risk] || ATTACK_RISK_COLORS.incerto;
   }
 
   function formatAttackText(attack, defense) {
+    if (attack.risk === "scout") {
+      return "S:" + attack.scout + "\nR:SCOUT";
+    }
+
+    if (attack.risk === "aguardando") {
+      return "A:" + attack.total + "\nR:TORRE";
+    }
+
+    if (attack.risk === "incerto") {
+      return "A:" + attack.total + "\nR:INCERTO";
+    }
+
     const lines = ["A:" + attack.total];
 
     if (defense && defense.ownFull != null && defense.supportFull != null) {
@@ -868,8 +1318,9 @@
       "Scout: " + attack.scout,
       "Unknown: " + attack.unknown,
       "Nobre: " + attack.noble,
-      "Detectado torre: " + attack.willBeDetectedByTower,
-      "Fora torre: " + attack.notDetectedByTower
+      "Aguardando torre: " + (attack.towerPending || attack.willBeDetectedByTower || 0),
+      "Fora torre: " + attack.notDetectedByTower,
+      "Reais detectados: " + (attack.detectedRealAttack || 0)
     ];
 
     if (defense && defense.ownFull != null && defense.supportFull != null) {
@@ -1020,6 +1471,7 @@
 
   function clearAllAttacks() {
     attackResults = {};
+    clearAttackerSourceResults();
     draw();
     setAttackStatus("Ataques limpos.");
   }
@@ -1069,16 +1521,13 @@
 
     select.innerHTML = "";
 
+    const allOpt = document.createElement("option");
+
+    allOpt.value = ATTACK_ALL_VISIBLE;
+    allOpt.textContent = "Todas as aldeias visíveis";
+    select.appendChild(allOpt);
+
     const groupEntries = Object.values(groups);
-
-    if (!groupEntries.length) {
-      const opt = document.createElement("option");
-
-      opt.value = "";
-      opt.textContent = "Nenhum grupo";
-      select.appendChild(opt);
-      return;
-    }
 
     groupEntries.forEach(function (group) {
       const opt = document.createElement("option");
@@ -1088,10 +1537,14 @@
       select.appendChild(opt);
     });
 
-    if (currentValue && groups[currentValue]) {
+    if (currentValue === ATTACK_ALL_VISIBLE) {
+      select.value = ATTACK_ALL_VISIBLE;
+    } else if (currentValue && groups[currentValue]) {
       select.value = currentValue;
     } else if (activeGroupId && groups[activeGroupId]) {
       select.value = activeGroupId;
+    } else {
+      select.value = ATTACK_ALL_VISIBLE;
     }
   }
 
@@ -1191,22 +1644,118 @@
     });
   }
 
-  async function mapAttackForSelectedGroup() {
+  async function mapAttacksForSelectedTarget() {
     if (attackMappingInProgress) {
       setAttackStatus("Mapeamento de ataques já em andamento.", true);
       return;
     }
 
     const select = document.getElementById("twm_attack_group_select");
-    const groupId = select ? select.value : "";
-    const group = groupId ? groups[groupId] : null;
+    const value = select ? select.value : "";
+
+    if (value === ATTACK_ALL_VISIBLE) {
+      await mapAttacksForVisibleOwnVillages();
+      return;
+    }
+
+    const group = value ? groups[value] : null;
 
     if (!group) {
-      setAttackStatus("Selecione um grupo para mapear ataques.", true);
+      setAttackStatus("Selecione um grupo ou todas as aldeias visíveis.", true);
       return;
     }
 
     await mapAttackForGroup(group);
+  }
+
+  async function mapAttacksForVisibleOwnVillages() {
+    const entries = getVisibleOwnVillagesForAttackMapping();
+
+    if (!entries.length) {
+      setAttackStatus("Nenhuma aldeia própria visível encontrada.", true);
+      return;
+    }
+
+    clearAttackerSourceResults();
+
+    attackMappingCancelled = false;
+    attackMappingInProgress = true;
+    updateAttackButtons();
+    w.__twm_attack_cancel = cancelAttackMapping;
+
+    let ok = 0;
+    let failed = 0;
+
+    setAttackStatus("Mapeando ataques em todas as aldeias visíveis...");
+
+    for (let i = 0; i < entries.length; i++) {
+      if (attackMappingCancelled) {
+        break;
+      }
+
+      const item = entries[i];
+      const coord = item.coord;
+      const village = item.village;
+
+      try {
+        const parsed = await getVillageIncomingAttacks(village, coord);
+
+        if (attackMappingCancelled) {
+          break;
+        }
+
+        if (!parsed) {
+          failed++;
+          continue;
+        }
+
+        processIncomingAttackSources(coord, parsed);
+
+        const raw = parsed.counts;
+
+        if (raw.total > 0) {
+          attackResults[coord] = buildAttackResult(coord, raw);
+          ok++;
+        } else if (attackResults[coord]) {
+          delete attackResults[coord];
+        }
+
+        draw();
+
+        setAttackStatus(
+          "Mapeando todas as aldeias visíveis " +
+          (i + 1) + "/" + entries.length + " | OK: " + coord +
+          " (" + raw.total + " ataque(s))"
+        );
+
+        if (attackMappingCancelled) {
+          break;
+        }
+
+        await sleep(ATTACK_FETCH_DELAY);
+      } catch (err) {
+        failed++;
+        console.error("Erro ao mapear ataque em aldeia visível:", coord, err);
+      }
+    }
+
+    attackMappingInProgress = false;
+    w.__twm_attack_cancel = null;
+    w.__twm_attack_mapping_timer = null;
+    updateAttackButtons();
+    updateAttackInfo();
+    refreshAllPanels();
+    draw();
+
+    if (attackMappingCancelled) {
+      setAttackStatus(
+        "Mapeamento cancelado. Todas visíveis | OK: " + ok + " | Falhas: " + failed
+      );
+    } else {
+      setAttackStatus(
+        "Mapeamento concluído. Todas visíveis | OK: " + ok + " | Falhas: " + failed
+      );
+    }
   }
 
   async function mapAttackForGroup(group) {
@@ -1221,6 +1770,8 @@
       setAttackStatus("O grupo " + group.name + " não tem aldeias.", true);
       return;
     }
+
+    clearAttackerSourceResults();
 
     attackMappingCancelled = false;
     attackMappingInProgress = true;
@@ -1251,19 +1802,23 @@
       }
 
       try {
-        const raw = await getVillageIncomingAttacks(village);
+        const parsed = await getVillageIncomingAttacks(village, coord);
 
         if (attackMappingCancelled) {
           break;
         }
 
-        if (!raw) {
+        if (!parsed) {
           failed++;
           setAttackStatus(
             "Sem dados de ataques em " + coord + " (" + (i + 1) + "/" + coords.length + ")"
           );
           continue;
         }
+
+        processIncomingAttackSources(coord, parsed);
+
+        const raw = parsed.counts;
 
         if (raw.total > 0) {
           attackResults[coord] = buildAttackResult(coord, raw);
@@ -1295,6 +1850,7 @@
     w.__twm_attack_mapping_timer = null;
     updateAttackButtons();
     updateAttackInfo();
+    refreshAllPanels();
     draw();
 
     if (attackMappingCancelled) {
@@ -1752,7 +2308,10 @@
     const defense = defenseResults[coord];
     const attack = attackResults[coord];
 
-    if (attack && attack.total > 0) {
+    if (group.systemType === "attackers" && attackerSourceResults[coord]) {
+      populateAttackerSourceContent(box, coord);
+      box.title = formatAttackerSourceTitle(coord);
+    } else if (attack && attack.total > 0) {
       populateAttackContent(box, attack, defense);
       box.title = group.name + " - " + formatAttackTitle(coord, attack, defense);
     } else if (defense) {
@@ -1777,7 +2336,7 @@
 
       [
         "total", "scout", "noble", "ram", "catapult", "small", "medium", "large",
-        "unknown", "willBeDetectedByTower", "notDetectedByTower"
+        "unknown", "willBeDetectedByTower", "notDetectedByTower", "towerPending", "detectedRealAttack"
       ].forEach(function (key) {
         rawCounts[key] = existing[key] || 0;
       });
@@ -2044,6 +2603,16 @@
           '<button id="twm_map_group_attack">Mapear ataques do grupo</button> ' +
           '<button id="twm_cancel_attack" disabled>Cancelar mapeamento</button> ' +
           '<button id="twm_clear_attack">Limpar ataques</button>' +
+          '<div id="twm_attack_legend" style="margin-top:5px;font-size:11px;line-height:14px;color:#333;">' +
+            "<div><b>A</b> = ataques chegando</div>" +
+            "<div><b>D</b> = total de full defesa</div>" +
+            "<div><b>R</b> = risco</div>" +
+            "<div><b>S</b> = exploradores/scouts</div>" +
+            "<div><b>SCOUT</b> = apenas exploradores</div>" +
+            "<div><b>TORRE</b> = aguardando detecção da torre</div>" +
+            "<div><b>INCERTO</b> = tipo ainda não confiável</div>" +
+            "<div><b>ALTO/CRÍTICO</b> = exige atenção</div>" +
+          "</div>" +
           '<div id="twm_attack_info" style="font-size:11px;margin-top:4px;color:#333;"></div>' +
           '<div id="twm_attack_status" style="font-size:11px;margin-top:2px;color:#333;"></div>' +
         "</div>" +
@@ -2121,7 +2690,7 @@
     };
 
     document.getElementById("twm_map_group_attack").onclick = function () {
-      mapAttackForSelectedGroup();
+      mapAttacksForSelectedTarget();
     };
 
     document.getElementById("twm_clear_attack").onclick = function () {
@@ -2148,6 +2717,7 @@
       attackMappingCancelled = false;
       defenseResults = {};
       attackResults = {};
+      attackerSourceResults = {};
 
       if (w.__twm_defense_mapping_timer) {
         clearTimeout(w.__twm_defense_mapping_timer);
