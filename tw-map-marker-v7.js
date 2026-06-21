@@ -80,6 +80,7 @@
   const ATTACK_ALL_OWN = ALL_OWN;
   const DEBUG_ATTACK_PARSER = true;
   const DEBUG_VILLAGE_DISCOVERY = true;
+  const DEBUG_NATIVE_GROUPS = true;
   const NATIVE_INCOMING_GROUP_NAME = "Ataque a caminho";
 
   const ATTACK_RISK_COLORS = {
@@ -697,8 +698,17 @@
     return url;
   }
 
-  function normalizeGroupName(name) {
+  function cleanNativeGroupName(name) {
     return String(name || "")
+      .replace(/[>»]/g, "")
+      .replace(/[\[\]]/g, "")
+      .replace(/\s*\(\d+\)\s*/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function normalizeGroupName(name) {
+    return cleanNativeGroupName(name)
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "")
       .toLowerCase()
@@ -711,7 +721,7 @@
     const out = [];
 
     list.forEach(function (group) {
-      if (!group || !group.id) {
+      if (!group || !group.id || !group.name) {
         return;
       }
 
@@ -722,22 +732,62 @@
       }
 
       seen[key] = true;
-      out.push({
-        id: String(group.id),
-        name: String(group.name || "").replace(/\s+/g, " ").trim()
-      });
+      out.push(group);
     });
 
     return out;
+  }
+
+  function getNativeVillageGroupsFromCurrentDom() {
+    const result = [];
+    const selectors = [
+      'select[name="add_group"]',
+      'select[id*="group"]',
+      'select[name*="group"]'
+    ];
+    const selects = [];
+
+    selectors.forEach(function (selector) {
+      document.querySelectorAll(selector).forEach(function (el) {
+        if (selects.indexOf(el) === -1) {
+          selects.push(el);
+        }
+      });
+    });
+
+    selects.forEach(function (select) {
+      Array.from(select.options || []).forEach(function (opt) {
+        const value = String(opt.value || "").trim();
+        const text = cleanNativeGroupName(opt.textContent || "");
+
+        if (!value || !text) {
+          return;
+        }
+
+        if (value === "0" && normalizeGroupName(text).indexOf("ataque") === -1) {
+          return;
+        }
+
+        result.push({
+          id: value,
+          name: text,
+          source: "current_dom_select",
+          selectName: select.name || "",
+          selectId: select.id || ""
+        });
+      });
+    });
+
+    return dedupeNativeGroups(result);
   }
 
   function parseNativeGroupsFromHtml(html) {
     const doc = parseHtmlDoc(html);
     const found = [];
 
-    function pushGroup(id, name) {
+    function pushGroup(id, name, source) {
       const gid = String(id || "").trim();
-      const gname = String(name || "").replace(/\s+/g, " ").trim();
+      const gname = cleanNativeGroupName(name);
 
       if (!gid || !gname) {
         return;
@@ -745,7 +795,8 @@
 
       found.push({
         id: gid,
-        name: gname
+        name: gname,
+        source: source || "overview_fetch"
       });
     }
 
@@ -754,7 +805,7 @@
       const match = href.match(/[?&]group=(\d+)/);
 
       if (match) {
-        pushGroup(match[1], (a.innerText || a.textContent || "").trim());
+        pushGroup(match[1], (a.innerText || a.textContent || "").trim(), "overview_link");
       }
     });
 
@@ -762,41 +813,85 @@
       const val = String(opt.value || "").trim();
 
       if (/^\d+$/.test(val)) {
-        pushGroup(val, (opt.textContent || "").trim());
+        pushGroup(val, (opt.textContent || "").trim(), "overview_option");
       }
     });
 
-    return dedupeNativeGroups(found);
+    return found;
   }
 
-  async function getNativeVillageGroups() {
+  async function getNativeVillageGroupsFromOverview() {
     try {
       const html = await fetchGameUrl(buildOverviewVillagesUrl("groups"));
 
       return parseNativeGroupsFromHtml(html);
     } catch (err) {
-      if (DEBUG_VILLAGE_DISCOVERY) {
-        console.log("[NativeGroups] falhou ao carregar grupos nativos", err);
+      if (DEBUG_NATIVE_GROUPS) {
+        console.log("[NativeGroups] falhou ao carregar grupos nativos via overview", err);
       }
 
       return [];
     }
   }
 
-  async function findNativeGroupByName(name) {
-    const nativeGroups = await getNativeVillageGroups();
+  async function getNativeVillageGroups() {
+    let nativeGroups = [];
 
-    if (DEBUG_VILLAGE_DISCOVERY) {
+    nativeGroups = nativeGroups.concat(getNativeVillageGroupsFromCurrentDom());
+
+    const fetchedGroups = await getNativeVillageGroupsFromOverview();
+
+    nativeGroups = nativeGroups.concat(fetchedGroups);
+    nativeGroups = dedupeNativeGroups(nativeGroups);
+
+    if (DEBUG_NATIVE_GROUPS) {
       console.log("[NativeGroups]", nativeGroups);
     }
 
-    const target = normalizeGroupName(name);
+    return nativeGroups;
+  }
 
-    for (let i = 0; i < nativeGroups.length; i++) {
-      if (normalizeGroupName(nativeGroups[i].name) === target) {
-        return nativeGroups[i];
+  async function findNativeGroupByName(name) {
+    const nativeGroups = await getNativeVillageGroups();
+    const wanted = normalizeGroupName(name);
+
+    const exact = nativeGroups.find(function (group) {
+      return normalizeGroupName(group.name) === wanted;
+    });
+
+    if (exact) {
+      if (DEBUG_NATIVE_GROUPS) {
+        console.log("[NativeGroup " + name + "]", exact);
       }
+
+      return exact;
     }
+
+    const contains = nativeGroups.find(function (group) {
+      const normalized = normalizeGroupName(group.name);
+
+      return normalized.indexOf(wanted) !== -1 || wanted.indexOf(normalized) !== -1;
+    });
+
+    if (contains) {
+      if (DEBUG_NATIVE_GROUPS) {
+        console.log("[NativeGroup " + name + "]", contains);
+      }
+
+      return contains;
+    }
+
+    console.warn("[NativeGroup não encontrado]", {
+      wanted: wanted,
+      groups: nativeGroups.map(function (group) {
+        return {
+          id: group.id,
+          name: group.name,
+          normalized: normalizeGroupName(group.name),
+          source: group.source
+        };
+      })
+    });
 
     return null;
   }
@@ -806,17 +901,48 @@
       return [];
     }
 
-    try {
-      const html = await fetchGameUrl(buildOverviewVillagesUrlWithGroup("combined", groupId));
+    const currentVillageId = w.game_data && w.game_data.village && w.game_data.village.id;
+    const urls = [];
 
-      return parseOwnVillagesFromOverviewHtml(html);
-    } catch (err) {
-      if (DEBUG_VILLAGE_DISCOVERY) {
-        console.log("[NativeGroupVillages] falhou group=" + groupId, err);
-      }
-
-      return [];
+    if (currentVillageId) {
+      urls.push(
+        "/game.php?village=" + currentVillageId + "&screen=overview_villages&mode=combined&group=" + encodeURIComponent(groupId),
+        "/game.php?village=" + currentVillageId + "&screen=overview_villages&mode=combined&group_id=" + encodeURIComponent(groupId)
+      );
+    } else {
+      urls.push(
+        buildOverviewVillagesUrlWithGroup("combined", groupId),
+        buildOverviewVillagesUrl("combined") + "&group_id=" + encodeURIComponent(groupId)
+      );
     }
+
+    for (let i = 0; i < urls.length; i++) {
+      const url = urls[i];
+
+      try {
+        const html = await fetchGameUrl(url);
+        const villages = parseOwnVillagesFromOverviewHtml(html);
+
+        if (DEBUG_NATIVE_GROUPS) {
+          console.log("[NativeGroupVillages]", {
+            groupId: groupId,
+            url: url,
+            count: villages.length,
+            sample: villages.slice(0, 10)
+          });
+        }
+
+        if (villages.length) {
+          return villages;
+        }
+      } catch (err) {
+        if (DEBUG_NATIVE_GROUPS) {
+          console.log("[NativeGroupVillages] falhou", { groupId: groupId, url: url, err: err });
+        }
+      }
+    }
+
+    return [];
   }
 
   function findVillageIdByCoord(coord) {
