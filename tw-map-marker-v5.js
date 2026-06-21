@@ -1,1 +1,669 @@
-javascript:(function(){const w=window;if(!w.TWMap||!w.TWMap.villages){alert('Abra isso dentro do mapa.');return;}document.getElementById('twm_panel')?.remove();document.querySelectorAll('.twm_mark').forEach(e=>e.remove());if(w.__twm_interval)clearInterval(w.__twm_interval);if(w.__twm_fullscreen_listener)document.removeEventListener('fullscreenchange',w.__twm_fullscreen_listener);if(w.__twm_click_listener)document.removeEventListener('click',w.__twm_click_listener,true);const world=(w.game_data&&w.game_data.world)||'world';const K='twm_visual_marker_v5_'+world;const OLD='twm_visual_marker_v4_'+world;let clickMode=false;function defState(){return{active:'atk',groups:{atk:{name:'Atacando',color:'#ff0000',symbol:'⚔',coords:{}},def:{name:'Defendendo',color:'#004cff',symbol:'🛡',coords:{}},nobre:{name:'Nobre',color:'#8a00ff',symbol:'♛',coords:{}},alvo:{name:'Alvo futuro',color:'#ffd000',symbol:'★',coords:{}},ok:{name:'Conferida',color:'#00b050',symbol:'✓',coords:{}},perigo:{name:'Perigo',color:'#ff8c00',symbol:'!',coords:{}}}};}function cleanId(s){s=String(s||'grupo').replace(/[^a-zA-Z0-9]/g,'').slice(0,18);return s||('g'+Date.now());}function importOld(state){let old={};try{old=JSON.parse(localStorage.getItem(OLD)||'{}')}catch(e){old={};}let first=null;for(const [coord,d] of Object.entries(old)){let name=(d&&d.label)||('Importado '+((d&&d.color)||''));let color=(d&&d.color)||'#ff0000';let gid='imp_'+cleanId(name+color);if(!state.groups[gid])state.groups[gid]={name:name,color:color,symbol:(name&&name[0]?name[0].toUpperCase():''),coords:{}};state.groups[gid].coords[coord]=1;if(!first)first=gid;}if(first)state.active=first;}let state=null;try{state=JSON.parse(localStorage.getItem(K)||'null')}catch(e){state=null;}if(!state||!state.groups){state=defState();importOld(state);localStorage.setItem(K,JSON.stringify(state));}function save(){localStorage.setItem(K,JSON.stringify(state));}function host(){return document.fullscreenElement||document.getElementById('map_wrap')||document.getElementById('map')||document.body;}function movePanelToHost(){const p=document.getElementById('twm_panel');if(!p)return;const h=host();if(p.parentElement!==h)h.appendChild(p);p.style.zIndex='2147483647';}function keyOf(c){return String(c).replace('|','');}function coordText(k){k=String(k);return k.includes('|')?k:k.slice(0,3)+'|'+k.slice(3);}function parseCoords(t){const out=[];(String(t||'').match(/\d{3}\s*\|\s*\d{3}|\d{3}\s*[,; ]\s*\d{3}/g)||[]).forEach(s=>{const m=s.match(/(\d{3})\D+(\d{3})/);if(m)out.push(m[1]+'|'+m[2]);});return[...new Set(out)];}function alpha(hex,a){hex=String(hex||'#ff0000').replace('#','');let r=parseInt(hex.slice(0,2),16),g=parseInt(hex.slice(2,4),16),b=parseInt(hex.slice(4,6),16);if(isNaN(r)||isNaN(g)||isNaN(b)){r=255;g=0;b=0;}return'rgba('+r+','+g+','+b+','+a+')';}function current(){if(!state.groups[state.active])state.active=Object.keys(state.groups)[0];return state.groups[state.active];}function coordsToText(gid){const g=state.groups[gid||state.active];return Object.keys((g&&g.coords)||{}).map(coordText).sort().join('\n');}function removeCoordAll(c){for(const g of Object.values(state.groups))delete g.coords[c];}function findCoordByVillageId(id){for(const [k,v]of Object.entries(TWMap.villages||{})){if(String(v.id)===String(id))return coordText(k);}return null;}function coordFromEvent(e){try{const map=document.getElementById('map');const r=map.getBoundingClientRect();const px=e.clientX-r.left+TWMap.map.pos[0];const py=e.clientY-r.top+TWMap.map.pos[1];const co=TWMap.map.coordByPixel(px,py);if(co&&co.length>=2)return co[0]+'|'+co[1];}catch(err){}return null;}function clearMarks(){document.querySelectorAll('.twm_mark').forEach(e=>e.remove());}function markImg(img,c,g){if(!img||!img.parentElement)return;const parent=img.parentElement;if(getComputedStyle(parent).position==='static')parent.style.position='relative';const box=document.createElement('div');box.className='twm_mark';box.dataset.coord=c;box.title=(g.name?g.name+' - ':'')+c;const left=img.style.left||img.offsetLeft+'px';const top=img.style.top||img.offsetTop+'px';const width=img.style.width||img.width+'px';const height=img.style.height||img.height+'px';let z=parseInt(img.style.zIndex||getComputedStyle(img).zIndex||5);if(isNaN(z))z=5;box.style.cssText='position:absolute;left:'+left+';top:'+top+';width:'+width+';height:'+height+';box-sizing:border-box;border:3px solid '+g.color+';background:'+alpha(g.color,.38)+';box-shadow:0 0 7px 3px '+g.color+';border-radius:3px;z-index:'+(z+50)+';pointer-events:none;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:15px;text-shadow:1px 1px 2px #000,-1px -1px 2px #000;line-height:1;text-align:center;overflow:hidden;';box.textContent=g.symbol||'';parent.appendChild(box);}function draw(){clearMarks();for(const g of Object.values(state.groups)){for(const c of Object.keys(g.coords||{})){const v=TWMap.villages[keyOf(c)];if(!v||!v.id)continue;const img=document.getElementById('map_village_'+v.id);if(img)markImg(img,c,g);}}movePanelToHost();updateCount();}function total(){let n=0;for(const g of Object.values(state.groups))n+=Object.keys(g.coords||{}).length;return n;}function groupTotal(){const g=current();return Object.keys((g&&g.coords)||{}).length;}function updateCount(){const e=document.getElementById('twm_count');if(e)e.textContent='No grupo: '+groupTotal()+' | Total geral: '+total();}function saveFields(){const g=current();if(!g)return;g.name=document.getElementById('twm_name')?.value.trim()||g.name;g.color=document.getElementById('twm_color')?.value||g.color;g.symbol=document.getElementById('twm_symbol')?.value.trim()||'';save();}function rebuildSelect(){const sel=document.getElementById('twm_group');if(!sel)return;sel.innerHTML='';for(const [id,g]of Object.entries(state.groups)){const o=document.createElement('option');o.value=id;o.textContent=(g.symbol?g.symbol+' ':'')+g.name+' ('+Object.keys(g.coords||{}).length+')';sel.appendChild(o);}sel.value=state.active;}function loadActive(){const g=current();if(!g)return;document.getElementById('twm_name').value=g.name||'';document.getElementById('twm_color').value=g.color||'#ff0000';document.getElementById('twm_symbol').value=g.symbol||'';document.getElementById('twm_text').value=coordsToText(state.active);rebuildSelect();updateCount();}function drag(p,h){let ox=0,oy=0,on=false;h.style.cursor='move';h.onmousedown=e=>{if(e.target.tagName==='BUTTON')return;on=true;ox=e.clientX-p.offsetLeft;oy=e.clientY-p.offsetTop;e.preventDefault();};document.addEventListener('mousemove',e=>{if(!on)return;p.style.left=e.clientX-ox+'px';p.style.top=e.clientY-oy+'px';p.style.right='auto';});document.addEventListener('mouseup',()=>on=false);}const p=document.createElement('div');p.id='twm_panel';p.style.cssText='position:fixed;right:18px;top:95px;z-index:2147483647;background:#f4e4bc;border:2px solid #7d510f;padding:0;color:#000;font-size:12px;box-shadow:0 0 8px #000;border-radius:4px;min-width:390px;';p.innerHTML='<div id="twm_head" style="background:#d7bd82;padding:6px;font-weight:bold;">Marcador de aldeias v5 <button id="twm_close" style="float:right">X</button></div><div style="padding:7px"><div>Grupo: <select id="twm_group" style="width:185px"></select> <button id="twm_new">Novo</button> <button id="twm_del">Excluir</button></div><div style="margin-top:5px">Nome: <input id="twm_name" style="width:120px"> Cor: <input id="twm_color" type="color" value="#ff0000"> Símbolo/texto: <input id="twm_symbol" maxlength="6" style="width:55px"> <button id="twm_save_group">Salvar grupo</button></div><textarea id="twm_text" placeholder="Coords do grupo selecionado. Ex: 565|526 544|531" style="width:370px;height:90px;margin-top:6px"></textarea><br><button id="twm_add">Adicionar coords ao grupo</button> <button id="twm_click">Modo clique: OFF</button> <button id="twm_copy">Copiar grupo</button> <button id="twm_clear_group">Limpar grupo</button> <button id="twm_clear_all">Limpar tudo</button><div id="twm_count" style="margin-top:5px;font-size:11px"></div></div>';host().appendChild(p);drag(p,document.getElementById('twm_head'));document.getElementById('twm_close').onclick=()=>{p.remove();clearMarks();if(w.__twm_interval)clearInterval(w.__twm_interval);if(w.__twm_fullscreen_listener)document.removeEventListener('fullscreenchange',w.__twm_fullscreen_listener);if(w.__twm_click_listener)document.removeEventListener('click',w.__twm_click_listener,true);};document.getElementById('twm_group').onchange=function(){saveFields();state.active=this.value;save();loadActive();draw();};document.getElementById('twm_save_group').onclick=function(){saveFields();rebuildSelect();draw();};document.getElementById('twm_new').onclick=function(){saveFields();let id='g'+Date.now();state.groups[id]={name:'Novo grupo',color:'#ff0000',symbol:'?',coords:{}};state.active=id;save();loadActive();draw();};document.getElementById('twm_del').onclick=function(){if(Object.keys(state.groups).length<=1){alert('Precisa ter pelo menos 1 grupo.');return;}const g=current();if(confirm('Excluir o grupo "'+g.name+'"?')){delete state.groups[state.active];state.active=Object.keys(state.groups)[0];save();loadActive();draw();}};document.getElementById('twm_add').onclick=function(){saveFields();const g=current();const cs=parseCoords(document.getElementById('twm_text').value);if(!cs.length){alert('Nenhuma coordenada encontrada. Use 565|526.');return;}cs.forEach(c=>{removeCoordAll(c);g.coords[c]=1;});save();loadActive();draw();};document.getElementById('twm_copy').onclick=function(){navigator.clipboard?.writeText(coordsToText(state.active));};document.getElementById('twm_clear_group').onclick=function(){const g=current();if(confirm('Limpar todas as coords do grupo "'+g.name+'"?')){g.coords={};save();loadActive();draw();}};document.getElementById('twm_clear_all').onclick=function(){if(confirm('Apagar todas as marcações de todos os grupos?')){for(const g of Object.values(state.groups))g.coords={};save();loadActive();draw();}};w.__twm_click_listener=function(e){if(!clickMode)return;if(e.target.closest('#twm_panel'))return;let coord=null;const img=e.target.closest('img[id^="map_village_"]');if(img)coord=findCoordByVillageId(img.id.replace('map_village_',''));if(!coord)coord=coordFromEvent(e);if(!coord||!TWMap.villages[keyOf(coord)])return;e.preventDefault();e.stopPropagation();saveFields();const g=current();if(g.coords[coord])delete g.coords[coord];else{removeCoordAll(coord);g.coords[coord]=1;}save();loadActive();draw();};document.getElementById('twm_click').onclick=function(){clickMode=!clickMode;this.textContent='Modo clique: '+(clickMode?'ON':'OFF');this.style.fontWeight=clickMode?'bold':'normal';};document.addEventListener('click',w.__twm_click_listener,true);w.__twm_fullscreen_listener=function(){setTimeout(()=>{movePanelToHost();draw();},150);};document.addEventListener('fullscreenchange',w.__twm_fullscreen_listener);w.__twm_interval=setInterval(draw,800);loadActive();draw();})();
+/* Tribal Wars - Marcador visual de aldeias v6
+   Uso na barra de acesso rápido:
+   javascript:$.getScript('URL_DO_ARQUIVO/tw-map-marker-v6.js?v=1');
+*/
+(function () {
+  const w = window;
+
+  if (!w.TWMap || !w.TWMap.villages) {
+    alert("Abra isso dentro da tela do mapa.");
+    return;
+  }
+
+  document.getElementById("twm_panel")?.remove();
+  document.querySelectorAll(".twm_mark").forEach(e => e.remove());
+
+  if (w.__twm_interval) clearInterval(w.__twm_interval);
+  if (w.__twm_fullscreen_listener) {
+    document.removeEventListener("fullscreenchange", w.__twm_fullscreen_listener);
+  }
+  if (w.__twm_click_listener) {
+    document.removeEventListener("click", w.__twm_click_listener, true);
+  }
+
+  const world = (w.game_data && w.game_data.world) || "world";
+  const K = "twm_visual_marker_v6_" + world;
+  const OLD = "twm_visual_marker_v5_" + world;
+
+  let clickMode = false;
+
+  function defState() {
+    return {
+      active: "atk",
+      groups: {
+        atk: {
+          name: "Atacando",
+          color: "#ff0000",
+          symbol: "⚔",
+          icon: "/graphic/unit_map/axe.webp",
+          coords: {}
+        },
+        def: {
+          name: "Defendendo",
+          color: "#004cff",
+          symbol: "🛡",
+          icon: "/graphic/unit_map/spear.webp",
+          coords: {}
+        },
+        nobre: {
+          name: "Nobre",
+          color: "#8a00ff",
+          symbol: "♛",
+          icon: "/graphic/unit_map/snob.webp",
+          coords: {}
+        },
+        alvo: {
+          name: "Alvo futuro",
+          color: "#ffd000",
+          symbol: "★",
+          icon: "/graphic/unit_map/ram.webp",
+          coords: {}
+        },
+        ok: {
+          name: "Conferida",
+          color: "#00b050",
+          symbol: "✓",
+          icon: "",
+          coords: {}
+        },
+        perigo: {
+          name: "Perigo",
+          color: "#ff8c00",
+          symbol: "!",
+          icon: "/graphic/unit_map/spy.webp",
+          coords: {}
+        }
+      }
+    };
+  }
+
+  function cleanId(s) {
+    s = String(s || "grupo").replace(/[^a-zA-Z0-9]/g, "").slice(0, 18);
+    return s || ("g" + Date.now());
+  }
+
+  function importOld(state) {
+    let old = {};
+    try {
+      old = JSON.parse(localStorage.getItem(OLD) || "{}");
+    } catch (e) {
+      old = {};
+    }
+
+    let first = null;
+
+    for (const [coord, d] of Object.entries(old)) {
+      const name = (d && d.label) || ("Importado " + ((d && d.color) || ""));
+      const color = (d && d.color) || "#ff0000";
+      const gid = "imp_" + cleanId(name + color);
+
+      if (!state.groups[gid]) {
+        state.groups[gid] = {
+          name,
+          color,
+          symbol: name && name[0] ? name[0].toUpperCase() : "",
+          icon: "",
+          coords: {}
+        };
+      }
+
+      state.groups[gid].coords[coord] = 1;
+      if (!first) first = gid;
+    }
+
+    if (first) state.active = first;
+  }
+
+  let state = null;
+
+  try {
+    state = JSON.parse(localStorage.getItem(K) || "null");
+  } catch (e) {
+    state = null;
+  }
+
+  if (!state || !state.groups) {
+    state = defState();
+    importOld(state);
+    localStorage.setItem(K, JSON.stringify(state));
+  }
+
+  function save() {
+    localStorage.setItem(K, JSON.stringify(state));
+  }
+
+  function host() {
+    return (
+      document.fullscreenElement ||
+      document.getElementById("map_wrap") ||
+      document.getElementById("map") ||
+      document.body
+    );
+  }
+
+  function movePanelToHost() {
+    const p = document.getElementById("twm_panel");
+    if (!p) return;
+
+    const h = host();
+
+    if (p.parentElement !== h) h.appendChild(p);
+    p.style.zIndex = "2147483647";
+  }
+
+  function keyOf(c) {
+    return String(c).replace("|", "");
+  }
+
+  function coordText(k) {
+    k = String(k);
+    return k.includes("|") ? k : k.slice(0, 3) + "|" + k.slice(3);
+  }
+
+  function parseCoords(t) {
+    const out = [];
+
+    (String(t || "").match(/\d{3}\s*\|\s*\d{3}|\d{3}\s*[,; ]\s*\d{3}/g) || []).forEach(s => {
+      const m = s.match(/(\d{3})\D+(\d{3})/);
+      if (m) out.push(m[1] + "|" + m[2]);
+    });
+
+    return [...new Set(out)];
+  }
+
+  function alpha(hex, a) {
+    hex = String(hex || "#ff0000").replace("#", "");
+
+    let r = parseInt(hex.slice(0, 2), 16);
+    let g = parseInt(hex.slice(2, 4), 16);
+    let b = parseInt(hex.slice(4, 6), 16);
+
+    if (isNaN(r) || isNaN(g) || isNaN(b)) {
+      r = 255;
+      g = 0;
+      b = 0;
+    }
+
+    return "rgba(" + r + "," + g + "," + b + "," + a + ")";
+  }
+
+  function current() {
+    if (!state.groups[state.active]) state.active = Object.keys(state.groups)[0];
+    return state.groups[state.active];
+  }
+
+  function coordsToText(gid) {
+    const g = state.groups[gid || state.active];
+    return Object.keys((g && g.coords) || {}).map(coordText).sort().join("\n");
+  }
+
+  function removeCoordAll(c) {
+    for (const g of Object.values(state.groups)) delete g.coords[c];
+  }
+
+  function findCoordByVillageId(id) {
+    for (const [k, v] of Object.entries(TWMap.villages || {})) {
+      if (String(v.id) === String(id)) return coordText(k);
+    }
+
+    return null;
+  }
+
+  function coordFromEvent(e) {
+    try {
+      const map = document.getElementById("map");
+      const r = map.getBoundingClientRect();
+      const px = e.clientX - r.left + TWMap.map.pos[0];
+      const py = e.clientY - r.top + TWMap.map.pos[1];
+      const co = TWMap.map.coordByPixel(px, py);
+
+      if (co && co.length >= 2) return co[0] + "|" + co[1];
+    } catch (err) {}
+
+    return null;
+  }
+
+  function clearMarks() {
+    document.querySelectorAll(".twm_mark").forEach(e => e.remove());
+  }
+
+  function resolveIconUrl(url) {
+    url = String(url || "").trim();
+    if (!url) return "";
+
+    if (url.startsWith("http://") || url.startsWith("https://")) return url;
+    if (url.startsWith("/")) return url;
+
+    return "/graphic/unit_map/" + url.replace(/^\/+/, "");
+  }
+
+  function markImg(img, c, g) {
+    if (!img || !img.parentElement) return;
+
+    const parent = img.parentElement;
+
+    if (getComputedStyle(parent).position === "static") {
+      parent.style.position = "relative";
+    }
+
+    const box = document.createElement("div");
+
+    box.className = "twm_mark";
+    box.dataset.coord = c;
+    box.title = (g.name ? g.name + " - " : "") + c;
+
+    const left = img.style.left || img.offsetLeft + "px";
+    const top = img.style.top || img.offsetTop + "px";
+    const width = img.style.width || img.width + "px";
+    const height = img.style.height || img.height + "px";
+
+    let z = parseInt(img.style.zIndex || getComputedStyle(img).zIndex || 5);
+    if (isNaN(z)) z = 5;
+
+    box.style.cssText =
+      "position:absolute;" +
+      "left:" + left + ";" +
+      "top:" + top + ";" +
+      "width:" + width + ";" +
+      "height:" + height + ";" +
+      "box-sizing:border-box;" +
+      "border:3px solid " + g.color + ";" +
+      "background:" + alpha(g.color, 0.38) + ";" +
+      "box-shadow:0 0 7px 3px " + g.color + ";" +
+      "border-radius:3px;" +
+      "z-index:" + (z + 50) + ";" +
+      "pointer-events:none;" +
+      "display:flex;" +
+      "align-items:center;" +
+      "justify-content:center;" +
+      "color:white;" +
+      "font-weight:bold;" +
+      "font-size:15px;" +
+      "text-shadow:1px 1px 2px #000,-1px -1px 2px #000;" +
+      "line-height:1;" +
+      "text-align:center;" +
+      "overflow:hidden;";
+
+    const iconUrl = resolveIconUrl(g.icon);
+
+    if (iconUrl) {
+      const icon = document.createElement("img");
+
+      icon.src = iconUrl;
+      icon.alt = g.symbol || g.name || "";
+      icon.style.cssText =
+        "max-width:22px;" +
+        "max-height:22px;" +
+        "width:auto;" +
+        "height:auto;" +
+        "filter:drop-shadow(1px 1px 2px #000) drop-shadow(-1px -1px 2px #000);" +
+        "pointer-events:none;";
+
+      box.appendChild(icon);
+    } else {
+      box.textContent = g.symbol || "";
+    }
+
+    parent.appendChild(box);
+  }
+
+  function draw() {
+    clearMarks();
+
+    for (const g of Object.values(state.groups)) {
+      for (const c of Object.keys(g.coords || {})) {
+        const v = TWMap.villages[keyOf(c)];
+        if (!v || !v.id) continue;
+
+        const img = document.getElementById("map_village_" + v.id);
+        if (img) markImg(img, c, g);
+      }
+    }
+
+    movePanelToHost();
+    updateCount();
+  }
+
+  function total() {
+    let n = 0;
+
+    for (const g of Object.values(state.groups)) {
+      n += Object.keys(g.coords || {}).length;
+    }
+
+    return n;
+  }
+
+  function groupTotal() {
+    const g = current();
+    return Object.keys((g && g.coords) || {}).length;
+  }
+
+  function updateCount() {
+    const e = document.getElementById("twm_count");
+    if (e) e.textContent = "No grupo: " + groupTotal() + " | Total geral: " + total();
+  }
+
+  function saveFields() {
+    const g = current();
+    if (!g) return;
+
+    g.name = document.getElementById("twm_name")?.value.trim() || g.name;
+    g.color = document.getElementById("twm_color")?.value || g.color;
+    g.symbol = document.getElementById("twm_symbol")?.value.trim() || "";
+    g.icon = document.getElementById("twm_icon")?.value.trim() || "";
+
+    save();
+  }
+
+  function rebuildSelect() {
+    const sel = document.getElementById("twm_group");
+    if (!sel) return;
+
+    sel.innerHTML = "";
+
+    for (const [id, g] of Object.entries(state.groups)) {
+      const o = document.createElement("option");
+
+      o.value = id;
+      o.textContent =
+        (g.symbol ? g.symbol + " " : "") +
+        g.name +
+        " (" +
+        Object.keys(g.coords || {}).length +
+        ")";
+
+      sel.appendChild(o);
+    }
+
+    sel.value = state.active;
+  }
+
+  function loadActive() {
+    const g = current();
+    if (!g) return;
+
+    document.getElementById("twm_name").value = g.name || "";
+    document.getElementById("twm_color").value = g.color || "#ff0000";
+    document.getElementById("twm_symbol").value = g.symbol || "";
+    document.getElementById("twm_icon").value = g.icon || "";
+
+    const preset = document.getElementById("twm_icon_preset");
+    if (preset) {
+      const values = [...preset.options].map(o => o.value);
+      preset.value = values.includes(g.icon || "") ? (g.icon || "") : "custom";
+    }
+
+    document.getElementById("twm_text").value = coordsToText(state.active);
+
+    rebuildSelect();
+    updateCount();
+  }
+
+  function drag(p, h) {
+    let ox = 0;
+    let oy = 0;
+    let on = false;
+
+    h.style.cursor = "move";
+
+    h.onmousedown = e => {
+      if (e.target.tagName === "BUTTON") return;
+
+      on = true;
+      ox = e.clientX - p.offsetLeft;
+      oy = e.clientY - p.offsetTop;
+
+      e.preventDefault();
+    };
+
+    document.addEventListener("mousemove", e => {
+      if (!on) return;
+
+      p.style.left = e.clientX - ox + "px";
+      p.style.top = e.clientY - oy + "px";
+      p.style.right = "auto";
+    });
+
+    document.addEventListener("mouseup", () => {
+      on = false;
+    });
+  }
+
+  const p = document.createElement("div");
+
+  p.id = "twm_panel";
+  p.style.cssText =
+    "position:fixed;" +
+    "right:18px;" +
+    "top:95px;" +
+    "z-index:2147483647;" +
+    "background:#f4e4bc;" +
+    "border:2px solid #7d510f;" +
+    "padding:0;" +
+    "color:#000;" +
+    "font-size:12px;" +
+    "box-shadow:0 0 8px #000;" +
+    "border-radius:4px;" +
+    "min-width:430px;";
+
+  p.innerHTML =
+    '<div id="twm_head" style="background:#d7bd82;padding:6px;font-weight:bold;">' +
+      'Marcador de aldeias v6 ' +
+      '<button id="twm_close" style="float:right">X</button>' +
+    '</div>' +
+    '<div style="padding:7px">' +
+      '<div>' +
+        'Grupo: <select id="twm_group" style="width:185px"></select> ' +
+        '<button id="twm_new">Novo</button> ' +
+        '<button id="twm_del">Excluir</button>' +
+      '</div>' +
+      '<div style="margin-top:5px">' +
+        'Nome: <input id="twm_name" style="width:120px"> ' +
+        'Cor: <input id="twm_color" type="color" value="#ff0000"> ' +
+        'Texto: <input id="twm_symbol" maxlength="6" style="width:45px"> ' +
+        '<button id="twm_save_group">Salvar grupo</button>' +
+      '</div>' +
+      '<div style="margin-top:5px">' +
+        'Ícone: <select id="twm_icon_preset" style="width:105px">' +
+          '<option value="">Sem ícone</option>' +
+          '<option value="/graphic/unit_map/spear.webp">Lança</option>' +
+          '<option value="/graphic/unit_map/sword.webp">Espada</option>' +
+          '<option value="/graphic/unit_map/axe.webp">Machado</option>' +
+          '<option value="/graphic/unit_map/archer.webp">Arqueiro</option>' +
+          '<option value="/graphic/unit_map/spy.webp">Espião</option>' +
+          '<option value="/graphic/unit_map/light.webp">Leve</option>' +
+          '<option value="/graphic/unit_map/marcher.webp">Arq. montado</option>' +
+          '<option value="/graphic/unit_map/heavy.webp">Pesada</option>' +
+          '<option value="/graphic/unit_map/ram.webp">Aríete</option>' +
+          '<option value="/graphic/unit_map/catapult.webp">Catapulta</option>' +
+          '<option value="/graphic/unit_map/knight.webp">Paladino</option>' +
+          '<option value="/graphic/unit_map/snob.webp">Nobre</option>' +
+          '<option value="/graphic/unit_map/militia.webp">Milícia</option>' +
+          '<option value="custom">Personalizado</option>' +
+        '</select> ' +
+        'URL: <input id="twm_icon" placeholder="/graphic/unit_map/snob.webp" style="width:205px">' +
+      '</div>' +
+      '<textarea id="twm_text" placeholder="Coords do grupo selecionado. Ex: 565|526 544|531" style="width:410px;height:90px;margin-top:6px"></textarea><br>' +
+      '<button id="twm_add">Adicionar coords ao grupo</button> ' +
+      '<button id="twm_click">Modo clique: OFF</button> ' +
+      '<button id="twm_copy">Copiar grupo</button> ' +
+      '<button id="twm_clear_group">Limpar grupo</button> ' +
+      '<button id="twm_clear_all">Limpar tudo</button>' +
+      '<div id="twm_count" style="margin-top:5px;font-size:11px"></div>' +
+    '</div>';
+
+  host().appendChild(p);
+
+  drag(p, document.getElementById("twm_head"));
+
+  document.getElementById("twm_close").onclick = () => {
+    p.remove();
+    clearMarks();
+
+    if (w.__twm_interval) clearInterval(w.__twm_interval);
+    if (w.__twm_fullscreen_listener) {
+      document.removeEventListener("fullscreenchange", w.__twm_fullscreen_listener);
+    }
+    if (w.__twm_click_listener) {
+      document.removeEventListener("click", w.__twm_click_listener, true);
+    }
+  };
+
+  document.getElementById("twm_icon_preset").onchange = function () {
+    if (this.value !== "custom") {
+      document.getElementById("twm_icon").value = this.value;
+      saveFields();
+      draw();
+    }
+  };
+
+  document.getElementById("twm_group").onchange = function () {
+    saveFields();
+    state.active = this.value;
+    save();
+    loadActive();
+    draw();
+  };
+
+  document.getElementById("twm_save_group").onclick = function () {
+    saveFields();
+    rebuildSelect();
+    draw();
+  };
+
+  document.getElementById("twm_new").onclick = function () {
+    saveFields();
+
+    const id = "g" + Date.now();
+
+    state.groups[id] = {
+      name: "Novo grupo",
+      color: "#ff0000",
+      symbol: "?",
+      icon: "",
+      coords: {}
+    };
+
+    state.active = id;
+    save();
+    loadActive();
+    draw();
+  };
+
+  document.getElementById("twm_del").onclick = function () {
+    if (Object.keys(state.groups).length <= 1) {
+      alert("Precisa ter pelo menos 1 grupo.");
+      return;
+    }
+
+    const g = current();
+
+    if (confirm('Excluir o grupo "' + g.name + '"?')) {
+      delete state.groups[state.active];
+      state.active = Object.keys(state.groups)[0];
+
+      save();
+      loadActive();
+      draw();
+    }
+  };
+
+  document.getElementById("twm_add").onclick = function () {
+    saveFields();
+
+    const g = current();
+    const cs = parseCoords(document.getElementById("twm_text").value);
+
+    if (!cs.length) {
+      alert("Nenhuma coordenada encontrada. Use 565|526.");
+      return;
+    }
+
+    cs.forEach(c => {
+      removeCoordAll(c);
+      g.coords[c] = 1;
+    });
+
+    save();
+    loadActive();
+    draw();
+  };
+
+  document.getElementById("twm_copy").onclick = function () {
+    navigator.clipboard?.writeText(coordsToText(state.active));
+  };
+
+  document.getElementById("twm_clear_group").onclick = function () {
+    const g = current();
+
+    if (confirm('Limpar todas as coords do grupo "' + g.name + '"?')) {
+      g.coords = {};
+      save();
+      loadActive();
+      draw();
+    }
+  };
+
+  document.getElementById("twm_clear_all").onclick = function () {
+    if (confirm("Apagar todas as marcações de todos os grupos?")) {
+      for (const g of Object.values(state.groups)) g.coords = {};
+
+      save();
+      loadActive();
+      draw();
+    }
+  };
+
+  w.__twm_click_listener = function (e) {
+    if (!clickMode) return;
+    if (e.target.closest("#twm_panel")) return;
+
+    let coord = null;
+    const img = e.target.closest('img[id^="map_village_"]');
+
+    if (img) coord = findCoordByVillageId(img.id.replace("map_village_", ""));
+    if (!coord) coord = coordFromEvent(e);
+    if (!coord || !TWMap.villages[keyOf(coord)]) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    saveFields();
+
+    const g = current();
+
+    if (g.coords[coord]) {
+      delete g.coords[coord];
+    } else {
+      removeCoordAll(coord);
+      g.coords[coord] = 1;
+    }
+
+    save();
+    loadActive();
+    draw();
+  };
+
+  document.getElementById("twm_click").onclick = function () {
+    clickMode = !clickMode;
+    this.textContent = "Modo clique: " + (clickMode ? "ON" : "OFF");
+    this.style.fontWeight = clickMode ? "bold" : "normal";
+  };
+
+  document.addEventListener("click", w.__twm_click_listener, true);
+
+  w.__twm_fullscreen_listener = function () {
+    setTimeout(() => {
+      movePanelToHost();
+      draw();
+    }, 150);
+  };
+
+  document.addEventListener("fullscreenchange", w.__twm_fullscreen_listener);
+
+  w.__twm_interval = setInterval(draw, 800);
+
+  loadActive();
+  draw();
+})();
