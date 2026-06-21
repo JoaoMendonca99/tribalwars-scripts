@@ -10,13 +10,18 @@
     return;
   }
 
-  document.querySelectorAll(".twm_mark, .twm_defense_mark, .twm_panel, .twm_main_panel").forEach(function (el) {
+  document.querySelectorAll(".twm_mark, .twm_defense_mark, .twm_attack_mark, .twm_panel, .twm_main_panel").forEach(function (el) {
     el.remove();
   });
 
   if (w.__twm_defense_cancel) {
     w.__twm_defense_cancel();
     w.__twm_defense_cancel = null;
+  }
+
+  if (w.__twm_attack_cancel) {
+    w.__twm_attack_cancel();
+    w.__twm_attack_cancel = null;
   }
 
   if (w.__twm_interval) {
@@ -44,6 +49,11 @@
     w.__twm_defense_mapping_timer = null;
   }
 
+  if (w.__twm_attack_mapping_timer) {
+    clearTimeout(w.__twm_attack_mapping_timer);
+    w.__twm_attack_mapping_timer = null;
+  }
+
   let clickMode = false;
   let activeGroupId = null;
   let groupIndex = 0;
@@ -52,10 +62,15 @@
 
   const DEFENSE_UNITS = ["spear", "sword", "archer", "heavy"];
   const DEFENSE_FETCH_DELAY = 280;
+  const ATTACK_FETCH_DELAY = 320;
 
   let defenseResults = {};
   let defenseMappingCancelled = false;
   let defenseMappingInProgress = false;
+
+  let attackResults = {};
+  let attackMappingCancelled = false;
+  let attackMappingInProgress = false;
 
   const ICON_PRESETS = [
     { label: "Sem ícone", value: "", src: "" },
@@ -540,6 +555,358 @@
     return tryNext(0);
   }
 
+  function emptyAttackCounts() {
+    return {
+      total: 0,
+      scout: 0,
+      noble: 0,
+      ram: 0,
+      catapult: 0,
+      small: 0,
+      medium: 0,
+      large: 0,
+      unknown: 0,
+      willBeDetectedByTower: 0,
+      notDetectedByTower: 0
+    };
+  }
+
+  function mergeAttackRow(target, row) {
+    target.total += row.total || 0;
+
+    ["scout", "noble", "ram", "catapult", "small", "medium", "large", "unknown", "willBeDetectedByTower", "notDetectedByTower"].forEach(function (key) {
+      target[key] += row[key] || 0;
+    });
+  }
+
+  function isIncomingCommandRow(row) {
+    const hay = (row.innerHTML || "").toLowerCase();
+
+    return (
+      /graphic\/(command|unit|unit_map)/.test(hay) ||
+      /attack|ataque|angriff|spy|snob|ram|catapult|explorador|nobre|ariete|catapulta/.test(hay)
+    );
+  }
+
+  function classifyAttackRow(row) {
+    const counts = emptyAttackCounts();
+
+    counts.total = 1;
+
+    const imgs = Array.from(row.querySelectorAll("img")).map(function (img) {
+      return (
+        (img.getAttribute("src") || "") + " " +
+        (img.getAttribute("title") || "") + " " +
+        (img.getAttribute("alt") || "")
+      );
+    }).join(" ").toLowerCase();
+
+    const text = (row.textContent || "").toLowerCase();
+    const hay = imgs + " " + text;
+
+    if (/spy|explorador|scout|spion|verkenner|unit_map\/spy/.test(hay)) {
+      counts.scout += 1;
+    } else if (/snob|nobre|adel|fürst|prince|unit_map\/snob/.test(hay)) {
+      counts.noble += 1;
+    } else if (/\bram\b|ariete|sturmramme|ramme|unit_map\/ram/.test(hay)) {
+      counts.ram += 1;
+    } else if (/catapult|catapulta|katapult|unit_map\/catapult/.test(hay)) {
+      counts.catapult += 1;
+    } else if (/attack_small|ataque pequeno|kleiner angriff|small attack|pequeno/.test(hay)) {
+      counts.small += 1;
+    } else if (/attack_medium|ataque m[ée]dio|medium attack|mittlerer|medio/.test(hay)) {
+      counts.medium += 1;
+    } else if (/attack_large|ataque grande|large attack|gro[ßs]er angriff|grande/.test(hay)) {
+      counts.large += 1;
+    } else if (/attack|ataque|angriff|graphic\/command\/attack|graphic\/unit\/att/.test(hay)) {
+      counts.unknown += 1;
+    } else {
+      counts.unknown += 1;
+    }
+
+    if (/n[aã]o ser[aá] detectad|nao sera detectad|nicht.*erkannt|not be detected|won't be detected|nao.*detectad/.test(text)) {
+      counts.notDetectedByTower += 1;
+    } else if (/ser[aá] detectad|sera detectad|will be detected|wird.*erkannt|detected by the watch/.test(text)) {
+      counts.willBeDetectedByTower += 1;
+    }
+
+    return counts;
+  }
+
+  function findIncomingAttacksTable(doc) {
+    const incomingLabels = /chegando|incoming|ankommend|arriv/i;
+    let targetTable = null;
+
+    doc.querySelectorAll("h2, h3, h4, caption, th, td, span").forEach(function (el) {
+      if (targetTable || !incomingLabels.test(el.textContent || "")) {
+        return;
+      }
+
+      let table = el.closest("table");
+
+      if (!table) {
+        let node = el;
+
+        for (let i = 0; i < 4 && node && !table; i++) {
+          if (node.nextElementSibling && node.nextElementSibling.tagName === "TABLE") {
+            table = node.nextElementSibling;
+            break;
+          }
+
+          node = node.parentElement;
+        }
+      }
+
+      if (table) {
+        targetTable = table;
+      }
+    });
+
+    if (!targetTable) {
+      targetTable =
+        doc.querySelector("#commands_incoming_table") ||
+        doc.querySelector("table.incoming") ||
+        doc.querySelector("table#show_units");
+    }
+
+    if (!targetTable) {
+      doc.querySelectorAll("table").forEach(function (table) {
+        if (targetTable) {
+          return;
+        }
+
+        let hasCommand = false;
+
+        table.querySelectorAll("tr").forEach(function (row) {
+          if (hasCommand) {
+            return;
+          }
+
+          if (isIncomingCommandRow(row)) {
+            hasCommand = true;
+          }
+        });
+
+        if (hasCommand) {
+          targetTable = table;
+        }
+      });
+    }
+
+    return targetTable;
+  }
+
+  function parseIncomingAttacksFromHtml(html) {
+    if (!html || typeof html !== "string") {
+      return null;
+    }
+
+    const doc = document.createElement("div");
+
+    doc.innerHTML = html;
+
+    const pageText = (doc.textContent || "").toLowerCase();
+    const table = findIncomingAttacksTable(doc);
+    const result = emptyAttackCounts();
+
+    if (!table) {
+      if (/chegando|incoming|ankommend/.test(pageText)) {
+        return result;
+      }
+
+      return null;
+    }
+
+    table.querySelectorAll("tr").forEach(function (row) {
+      if (row.querySelector("th")) {
+        return;
+      }
+
+      if (!isIncomingCommandRow(row)) {
+        return;
+      }
+
+      mergeAttackRow(result, classifyAttackRow(row));
+    });
+
+    return result;
+  }
+
+  function getVillageIncomingAttacks(village) {
+    return fetchGameUrl(buildInfoVillageUrl(village.id)).then(function (response) {
+      return parseIncomingAttacksFromHtml(response);
+    });
+  }
+
+  function getDefenseDataForRisk(coord) {
+    const defense = defenseResults[coord];
+
+    if (!defense || defense.ownFull == null || defense.supportFull == null) {
+      return null;
+    }
+
+    return {
+      ownFull: Number(defense.ownFull),
+      supportFull: Number(defense.supportFull),
+      totalFull: Number(defense.ownFull) + Number(defense.supportFull)
+    };
+  }
+
+  function calculateAttackRisk(coord, attackData, defenseData) {
+    if (!attackData || !attackData.total) {
+      return "baixo";
+    }
+
+    if (attackData.noble > 0) {
+      return "critico";
+    }
+
+    if (attackData.notDetectedByTower > 0) {
+      return "alto";
+    }
+
+    if (attackData.unknown > 0) {
+      return "medio";
+    }
+
+    if (defenseData) {
+      const totalDefense = defenseData.totalFull;
+      const attackWeight =
+        attackData.large +
+        attackData.medium * 0.5 +
+        attackData.small * 0.25 +
+        attackData.unknown;
+
+      if (attackWeight > totalDefense * 1.5) {
+        return "critico";
+      }
+
+      if (attackWeight > totalDefense) {
+        return "alto";
+      }
+
+      if (attackWeight >= totalDefense * 0.7) {
+        return "medio";
+      }
+
+      return "baixo";
+    }
+
+    if (attackData.total >= 5) {
+      return "alto";
+    }
+
+    if (attackData.total >= 2) {
+      return "medio";
+    }
+
+    return "baixo";
+  }
+
+  function buildAttackResult(coord, rawCounts) {
+    const defenseData = getDefenseDataForRisk(coord);
+    const result = Object.assign({}, rawCounts);
+
+    result.noDefenseData = !defenseData;
+    result.risk = calculateAttackRisk(coord, result, defenseData);
+
+    return result;
+  }
+
+  function formatRiskLabel(risk) {
+    const labels = {
+      baixo: "BAIXO",
+      medio: "MEDIO",
+      alto: "ALTO",
+      critico: "CRITICO"
+    };
+
+    return labels[risk] || "???";
+  }
+
+  function getAttackRiskColor(attack) {
+    if (!attack) {
+      return "#888888";
+    }
+
+    if (attack.notDetectedByTower > 0 && attack.risk !== "critico") {
+      return "#660000";
+    }
+
+    if (attack.willBeDetectedByTower > 0 && attack.unknown > 0 && attack.risk === "medio") {
+      return "#888888";
+    }
+
+    const colors = {
+      baixo: "#e6c200",
+      medio: "#ff8800",
+      alto: "#cc0000",
+      critico: "#9900cc"
+    };
+
+    return colors[attack.risk] || "#888888";
+  }
+
+  function formatAttackText(attack, defense) {
+    const lines = ["A:" + attack.total];
+
+    if (defense && defense.ownFull != null && defense.supportFull != null) {
+      lines.push("D:" + (Number(defense.ownFull) + Number(defense.supportFull)).toFixed(1));
+    } else if (attack.noDefenseData) {
+      lines.push("D:-");
+    }
+
+    lines.push("R:" + formatRiskLabel(attack.risk));
+
+    return lines.join("\n");
+  }
+
+  function formatAttackTitle(coord, attack, defense) {
+    const parts = [
+      coord,
+      "Ataques: " + attack.total,
+      "Scout: " + attack.scout,
+      "Unknown: " + attack.unknown,
+      "Nobre: " + attack.noble,
+      "Detectado torre: " + attack.willBeDetectedByTower,
+      "Fora torre: " + attack.notDetectedByTower
+    ];
+
+    if (defense && defense.ownFull != null && defense.supportFull != null) {
+      parts.push(
+        "Defesa total: " +
+        (Number(defense.ownFull) + Number(defense.supportFull)).toFixed(1)
+      );
+    } else if (attack.noDefenseData) {
+      parts.push("Sem dados de defesa");
+    }
+
+    parts.push("Risco: " + formatRiskLabel(attack.risk));
+
+    return parts.join(" | ");
+  }
+
+  function populateAttackContent(container, attack, defense) {
+    container.innerHTML = "";
+
+    const span = document.createElement("span");
+
+    span.className = "twm_mark_attack";
+    span.textContent = formatAttackText(attack, defense);
+    span.style.cssText =
+      "font-size:8px;" +
+      "line-height:8px;" +
+      "white-space:pre-line;" +
+      "font-weight:bold;" +
+      "color:#fff;" +
+      "text-shadow:1px 1px 2px #000,-1px -1px 2px #000;" +
+      "text-align:center;" +
+      "max-width:100%;" +
+      "overflow:hidden;";
+
+    container.appendChild(span);
+  }
+
   function calculateDefenseFulls(data) {
     if (!data || !data.ownUnits || !data.supportUnits) {
       return {
@@ -644,7 +1011,307 @@
   function clearAllDefense() {
     defenseResults = {};
     draw();
-    setStatus("Defesa limpa.");
+    setDefenseStatus("Defesa limpa.");
+  }
+
+  function countAttackResults() {
+    return Object.keys(attackResults).length;
+  }
+
+  function clearAllAttacks() {
+    attackResults = {};
+    draw();
+    setAttackStatus("Ataques limpos.");
+  }
+
+  function setAttackStatus(message, isError) {
+    const el = document.getElementById("twm_attack_status");
+
+    if (!el) {
+      return;
+    }
+
+    el.textContent = message || "";
+    el.style.color = isError ? "#7a0000" : "#333";
+  }
+
+  function updateAttackInfo() {
+    const info = document.getElementById("twm_attack_info");
+
+    if (!info) {
+      return;
+    }
+
+    info.textContent = "Ataques: " + countAttackResults() + " aldeia(s) mapeada(s)";
+  }
+
+  function updateAttackButtons() {
+    const cancelBtn = document.getElementById("twm_cancel_attack");
+    const mapBtn = document.getElementById("twm_map_group_attack");
+
+    if (cancelBtn) {
+      cancelBtn.disabled = !attackMappingInProgress;
+    }
+
+    if (mapBtn) {
+      mapBtn.disabled = attackMappingInProgress;
+    }
+  }
+
+  function refreshAttackGroupSelect() {
+    const select = document.getElementById("twm_attack_group_select");
+
+    if (!select) {
+      return;
+    }
+
+    const currentValue = select.value;
+
+    select.innerHTML = "";
+
+    const groupEntries = Object.values(groups);
+
+    if (!groupEntries.length) {
+      const opt = document.createElement("option");
+
+      opt.value = "";
+      opt.textContent = "Nenhum grupo";
+      select.appendChild(opt);
+      return;
+    }
+
+    groupEntries.forEach(function (group) {
+      const opt = document.createElement("option");
+
+      opt.value = group.id;
+      opt.textContent = group.name + " (" + Object.keys(group.coords || {}).length + ")";
+      select.appendChild(opt);
+    });
+
+    if (currentValue && groups[currentValue]) {
+      select.value = currentValue;
+    } else if (activeGroupId && groups[activeGroupId]) {
+      select.value = activeGroupId;
+    }
+  }
+
+  function cancelAttackMapping() {
+    attackMappingCancelled = true;
+    attackMappingInProgress = false;
+    w.__twm_attack_cancel = null;
+
+    if (w.__twm_attack_mapping_timer) {
+      clearTimeout(w.__twm_attack_mapping_timer);
+      w.__twm_attack_mapping_timer = null;
+    }
+
+    updateAttackButtons();
+    updateAttackInfo();
+    setAttackStatus("Mapeamento de ataques cancelado.");
+  }
+
+  function clearAttackOverlays() {
+    document.querySelectorAll(".twm_attack_mark").forEach(function (mark) {
+      mark.remove();
+    });
+  }
+
+  function drawStandaloneAttackOverlay(coord, attack) {
+    const village = w.TWMap.villages[keyOf(coord)];
+
+    if (!village || !village.id || !attack || !attack.total) {
+      return;
+    }
+
+    if (findGroupByCoord(coord)) {
+      return;
+    }
+
+    const img = document.getElementById("map_village_" + village.id);
+
+    if (!img || !img.parentElement) {
+      return;
+    }
+
+    const parent = img.parentElement;
+    const defense = defenseResults[coord];
+    const riskColor = getAttackRiskColor(attack);
+
+    if (getComputedStyle(parent).position === "static") {
+      parent.style.position = "relative";
+    }
+
+    const box = document.createElement("div");
+
+    box.className = "twm_attack_mark";
+    box.dataset.coord = coord;
+    box.title = formatAttackTitle(coord, attack, defense);
+
+    const left = img.style.left || img.offsetLeft + "px";
+    const top = img.style.top || img.offsetTop + "px";
+    const width = img.style.width || img.width + "px";
+    const height = img.style.height || img.height + "px";
+
+    let z = parseInt(img.style.zIndex || getComputedStyle(img).zIndex || 5, 10);
+
+    if (isNaN(z)) {
+      z = 5;
+    }
+
+    box.style.cssText =
+      "position:absolute;" +
+      "left:" + left + ";" +
+      "top:" + top + ";" +
+      "width:" + width + ";" +
+      "height:" + height + ";" +
+      "box-sizing:border-box;" +
+      "border:2px solid " + riskColor + ";" +
+      "background:" + alpha(riskColor, 0.72) + ";" +
+      "border-radius:3px;" +
+      "z-index:" + (z + 65) + ";" +
+      "pointer-events:none;" +
+      "display:flex;" +
+      "align-items:center;" +
+      "justify-content:center;" +
+      "overflow:hidden;" +
+      "padding:1px;";
+
+    populateAttackContent(box, attack, defense);
+
+    parent.appendChild(box);
+  }
+
+  function drawStandaloneAttackOverlays() {
+    Object.keys(attackResults).forEach(function (coord) {
+      const attack = attackResults[coord];
+
+      if (attack && attack.total > 0 && !findGroupByCoord(coord)) {
+        drawStandaloneAttackOverlay(coord, attack);
+      }
+    });
+  }
+
+  async function mapAttackForSelectedGroup() {
+    if (attackMappingInProgress) {
+      setAttackStatus("Mapeamento de ataques já em andamento.", true);
+      return;
+    }
+
+    const select = document.getElementById("twm_attack_group_select");
+    const groupId = select ? select.value : "";
+    const group = groupId ? groups[groupId] : null;
+
+    if (!group) {
+      setAttackStatus("Selecione um grupo para mapear ataques.", true);
+      return;
+    }
+
+    await mapAttackForGroup(group);
+  }
+
+  async function mapAttackForGroup(group) {
+    if (!group || !group.coords) {
+      setAttackStatus("Grupo inválido para mapear ataques.", true);
+      return;
+    }
+
+    const coords = Object.keys(group.coords);
+
+    if (!coords.length) {
+      setAttackStatus("O grupo " + group.name + " não tem aldeias.", true);
+      return;
+    }
+
+    attackMappingCancelled = false;
+    attackMappingInProgress = true;
+    updateAttackButtons();
+    w.__twm_attack_cancel = cancelAttackMapping;
+
+    let mapped = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    setAttackStatus("Mapeando ataques do grupo " + group.name + "...");
+
+    for (let i = 0; i < coords.length; i++) {
+      if (attackMappingCancelled) {
+        break;
+      }
+
+      const coord = coords[i];
+      const village = w.TWMap.villages[keyOf(coord)];
+
+      if (!village || !village.id) {
+        skipped++;
+        setAttackStatus(
+          "Mapeando " + group.name + " " + (i + 1) + "/" + coords.length +
+          " | fora da área visível: " + coord
+        );
+        continue;
+      }
+
+      try {
+        const raw = await getVillageIncomingAttacks(village);
+
+        if (attackMappingCancelled) {
+          break;
+        }
+
+        if (!raw) {
+          failed++;
+          setAttackStatus(
+            "Sem dados de ataques em " + coord + " (" + (i + 1) + "/" + coords.length + ")"
+          );
+          continue;
+        }
+
+        if (raw.total > 0) {
+          attackResults[coord] = buildAttackResult(coord, raw);
+          mapped++;
+        } else if (attackResults[coord]) {
+          delete attackResults[coord];
+        }
+
+        draw();
+
+        setAttackStatus(
+          "Mapeando " + group.name + " " + (i + 1) + "/" + coords.length +
+          " | OK: " + coord + " (" + raw.total + " ataque(s))"
+        );
+
+        if (attackMappingCancelled) {
+          break;
+        }
+
+        await sleep(ATTACK_FETCH_DELAY);
+      } catch (err) {
+        failed++;
+        console.error("Erro ao mapear ataques do grupo:", coord, err);
+      }
+    }
+
+    attackMappingInProgress = false;
+    w.__twm_attack_cancel = null;
+    w.__twm_attack_mapping_timer = null;
+    updateAttackButtons();
+    updateAttackInfo();
+    draw();
+
+    if (attackMappingCancelled) {
+      setAttackStatus(
+        "Mapeamento cancelado. Grupo: " + group.name +
+        " | OK: " + mapped +
+        " | Falhas: " + failed +
+        " | Fora da tela: " + skipped
+      );
+    } else {
+      setAttackStatus(
+        "Mapeamento concluído. Grupo: " + group.name +
+        " | OK: " + mapped +
+        " | Falhas: " + failed +
+        " | Fora da tela: " + skipped
+      );
+    }
   }
 
   function updateDefenseButtons() {
@@ -709,7 +1376,7 @@
 
     updateDefenseButtons();
     updateDefenseInfo();
-    setStatus("Mapeamento de defesa cancelado.");
+    setDefenseStatus("Mapeamento de defesa cancelado.");
   }
 
   function clearDefenseOverlays() {
@@ -783,7 +1450,9 @@
 
   function drawStandaloneDefenseOverlays() {
     Object.keys(defenseResults).forEach(function (coord) {
-      if (!findGroupByCoord(coord)) {
+      const attack = attackResults[coord];
+
+      if (!findGroupByCoord(coord) && !(attack && attack.total > 0)) {
         drawStandaloneDefenseOverlay(coord, defenseResults[coord]);
       }
     });
@@ -801,7 +1470,7 @@
 
   async function mapDefenseForSelectedGroup() {
     if (defenseMappingInProgress) {
-      setStatus("Mapeamento de defesa já em andamento.", true);
+      setDefenseStatus("Mapeamento de defesa já em andamento.", true);
       return;
     }
 
@@ -810,7 +1479,7 @@
     const group = groupId ? groups[groupId] : null;
 
     if (!group) {
-      setStatus("Selecione um grupo para mapear defesa.", true);
+      setDefenseStatus("Selecione um grupo para mapear defesa.", true);
       return;
     }
 
@@ -819,14 +1488,14 @@
 
   async function mapDefenseForGroup(group) {
     if (!group || !group.coords) {
-      setStatus("Grupo inválido para mapear defesa.", true);
+      setDefenseStatus("Grupo inválido para mapear defesa.", true);
       return;
     }
 
     const coords = Object.keys(group.coords);
 
     if (!coords.length) {
-      setStatus("O grupo " + group.name + " não tem aldeias.", true);
+      setDefenseStatus("O grupo " + group.name + " não tem aldeias.", true);
       return;
     }
 
@@ -839,7 +1508,7 @@
     let skipped = 0;
     let failed = 0;
 
-    setStatus("Mapeando defesa do grupo " + group.name + "...");
+    setDefenseStatus("Mapeando defesa do grupo " + group.name + "...");
 
     for (let i = 0; i < coords.length; i++) {
       if (defenseMappingCancelled) {
@@ -851,7 +1520,7 @@
 
       if (!village || !village.id) {
         skipped++;
-        setStatus(
+        setDefenseStatus(
           "Mapeando " + group.name + " " + (i + 1) + "/" + coords.length +
           " | fora da área visível: " + coord
         );
@@ -867,7 +1536,7 @@
 
         if (!data || !canSeparateDefenseData(data)) {
           failed++;
-          setStatus(
+          setDefenseStatus(
             "Sem dados separados em " + coord + " (" + (i + 1) + "/" + coords.length + ")"
           );
           continue;
@@ -884,7 +1553,7 @@
         mapped++;
         draw();
 
-        setStatus(
+        setDefenseStatus(
           "Mapeando " + group.name + " " + (i + 1) + "/" + coords.length + " | OK: " + coord
         );
 
@@ -907,14 +1576,14 @@
     draw();
 
     if (defenseMappingCancelled) {
-      setStatus(
+      setDefenseStatus(
         "Mapeamento cancelado. Grupo: " + group.name +
         " | OK: " + mapped +
         " | Falhas: " + failed +
         " | Fora da tela: " + skipped
       );
     } else {
-      setStatus(
+      setDefenseStatus(
         "Mapeamento concluído. Grupo: " + group.name +
         " | OK: " + mapped +
         " | Falhas: " + failed +
@@ -1081,8 +1750,12 @@
       "overflow:hidden;";
 
     const defense = defenseResults[coord];
+    const attack = attackResults[coord];
 
-    if (defense) {
+    if (attack && attack.total > 0) {
+      populateAttackContent(box, attack, defense);
+      box.title = group.name + " - " + formatAttackTitle(coord, attack, defense);
+    } else if (defense) {
       populateDefenseContent(box, defense);
       box.title = group.name + " - " + coord + " | " + formatDefenseTitle(defense);
     } else {
@@ -1092,9 +1765,32 @@
     parent.appendChild(box);
   }
 
+  function refreshAttackRisks() {
+    Object.keys(attackResults).forEach(function (coord) {
+      const existing = attackResults[coord];
+
+      if (!existing || !existing.total) {
+        return;
+      }
+
+      const rawCounts = emptyAttackCounts();
+
+      [
+        "total", "scout", "noble", "ram", "catapult", "small", "medium", "large",
+        "unknown", "willBeDetectedByTower", "notDetectedByTower"
+      ].forEach(function (key) {
+        rawCounts[key] = existing[key] || 0;
+      });
+
+      attackResults[coord] = buildAttackResult(coord, rawCounts);
+    });
+  }
+
   function draw() {
     clearMarks();
     clearDefenseOverlays();
+    clearAttackOverlays();
+    refreshAttackRisks();
 
     Object.values(groups).forEach(function (group) {
       Object.keys(group.coords || {}).forEach(function (coord) {
@@ -1113,6 +1809,7 @@
     });
 
     drawStandaloneDefenseOverlays();
+    drawStandaloneAttackOverlays();
 
     movePanelsToHost();
     refreshAllPanels();
@@ -1138,8 +1835,8 @@
     draw();
   }
 
-  function setStatus(message, isError) {
-    const el = document.getElementById("twm_status");
+  function setGroupStatus(message, isError) {
+    const el = document.getElementById("twm_group_status");
 
     if (!el) {
       return;
@@ -1147,6 +1844,34 @@
 
     el.textContent = message || "";
     el.style.color = isError ? "#7a0000" : "#333";
+  }
+
+  function setDefenseStatus(message, isError) {
+    const el = document.getElementById("twm_defense_status");
+
+    if (!el) {
+      return;
+    }
+
+    el.textContent = message || "";
+    el.style.color = isError ? "#7a0000" : "#333";
+  }
+
+  function updateGroupInfo() {
+    const el = document.getElementById("twm_group_status");
+
+    if (!el) {
+      return;
+    }
+
+    const active = activeGroupId ? groups[activeGroupId] : null;
+
+    el.textContent =
+      "Editando: " +
+      (active ? active.name : "nenhum grupo") +
+      " | Total geral: " +
+      totalAll();
+    el.style.color = "#333";
   }
 
   function updateClickButton() {
@@ -1293,24 +2018,35 @@
           '<button id="twm_new_group">Novo grupo</button> ' +
           '<button id="twm_click_mode">Modo clique: OFF</button> ' +
           '<button id="twm_clear_groups">Limpar grupos</button>' +
+          '<div id="twm_group_status" style="margin-top:4px;font-size:11px;color:#333;"></div>' +
         "</div>" +
         '<div class="twm_section" style="margin-bottom:8px;">' +
           '<div class="twm_section_title" style="font-weight:bold;margin-bottom:4px;border-bottom:1px solid #7d510f;padding-bottom:2px;">Defesa</div>' +
-          '<label style="display:block;margin-bottom:4px;font-size:11px;">Grupo defesa: ' +
+          '<label style="display:block;margin-bottom:4px;font-size:11px;">Calcular defesa: ' +
             '<select id="twm_defense_group_select" style="max-width:180px;margin-left:2px;"></select>' +
           "</label>" +
           '<button id="twm_map_group_defense">Mapear defesa do grupo</button> ' +
-          '<button id="twm_cancel_defense" disabled>Cancelar defesa</button> ' +
+          '<button id="twm_cancel_defense" disabled>Cancelar mapeamento</button> ' +
           '<button id="twm_clear_defense">Limpar defesa</button>' +
           '<div id="twm_defense_legend" style="margin-top:5px;font-size:11px;line-height:14px;color:#333;">' +
             "<div><b>P</b> = Full defesa próprio na aldeia</div>" +
             "<div><b>F</b> = Full defesa de fora / apoio</div>" +
             "<div><b>T</b> = Total de full def na aldeia</div>" +
           "</div>" +
+          '<div id="twm_defense_info" style="font-size:11px;margin-top:4px;color:#333;"></div>' +
+          '<div id="twm_defense_status" style="font-size:11px;margin-top:2px;color:#333;"></div>' +
         "</div>" +
-        '<div id="twm_main_info" style="margin-top:4px;font-size:11px"></div>' +
-        '<div id="twm_defense_info" style="font-size:11px;margin-top:2px"></div>' +
-        '<div id="twm_status" style="margin-top:4px;color:#7a0000;font-size:11px;"></div>' +
+        '<div class="twm_section" style="margin-bottom:8px;">' +
+          '<div class="twm_section_title" style="font-weight:bold;margin-bottom:4px;border-bottom:1px solid #7d510f;padding-bottom:2px;">Ataques</div>' +
+          '<label style="display:block;margin-bottom:4px;font-size:11px;">Grupo alvo: ' +
+            '<select id="twm_attack_group_select" style="max-width:180px;margin-left:2px;"></select>' +
+          "</label>" +
+          '<button id="twm_map_group_attack">Mapear ataques do grupo</button> ' +
+          '<button id="twm_cancel_attack" disabled>Cancelar mapeamento</button> ' +
+          '<button id="twm_clear_attack">Limpar ataques</button>' +
+          '<div id="twm_attack_info" style="font-size:11px;margin-top:4px;color:#333;"></div>' +
+          '<div id="twm_attack_status" style="font-size:11px;margin-top:2px;color:#333;"></div>' +
+        "</div>" +
       "</div>";
 
     host().appendChild(panel);
@@ -1332,7 +2068,7 @@
 
       createGroupPanel(groups[id]);
       setActiveGroup(id);
-      setStatus("Grupo criado: Novo grupo");
+      setGroupStatus("Grupo criado: Novo grupo");
     };
 
     document.getElementById("twm_click_mode").onclick = function () {
@@ -1341,7 +2077,7 @@
       if (!active) {
         clickMode = false;
         updateClickButton();
-        setStatus("Crie um grupo antes de ativar o modo clique.", true);
+        setGroupStatus("Crie um grupo antes de ativar o modo clique.", true);
         return;
       }
 
@@ -1349,9 +2085,9 @@
       updateClickButton();
 
       if (clickMode) {
-        setStatus("Modo clique ativado para: " + active.name);
+        setGroupStatus("Modo clique ativado para: " + active.name);
       } else {
-        setStatus("Modo clique desativado.");
+        setGroupStatus("Modo clique desativado.");
       }
     };
 
@@ -1365,7 +2101,7 @@
       });
 
       draw();
-      setStatus("Marcações de grupos removidas.");
+      setGroupStatus("Marcações de grupos removidas.");
     };
 
     document.getElementById("twm_cancel_defense").onclick = function () {
@@ -1380,7 +2116,20 @@
       clearAllDefense();
     };
 
+    document.getElementById("twm_cancel_attack").onclick = function () {
+      cancelAttackMapping();
+    };
+
+    document.getElementById("twm_map_group_attack").onclick = function () {
+      mapAttackForSelectedGroup();
+    };
+
+    document.getElementById("twm_clear_attack").onclick = function () {
+      clearAllAttacks();
+    };
+
     refreshDefenseGroupSelect();
+    refreshAttackGroupSelect();
 
     document.getElementById("twm_close_all").onclick = function () {
       if (w.__twm_defense_cancel) {
@@ -1388,16 +2137,29 @@
         w.__twm_defense_cancel = null;
       }
 
+      if (w.__twm_attack_cancel) {
+        w.__twm_attack_cancel();
+        w.__twm_attack_cancel = null;
+      }
+
       defenseMappingInProgress = false;
       defenseMappingCancelled = false;
+      attackMappingInProgress = false;
+      attackMappingCancelled = false;
       defenseResults = {};
+      attackResults = {};
 
       if (w.__twm_defense_mapping_timer) {
         clearTimeout(w.__twm_defense_mapping_timer);
         w.__twm_defense_mapping_timer = null;
       }
 
-      document.querySelectorAll(".twm_mark, .twm_defense_mark, .twm_panel, .twm_main_panel").forEach(function (el) {
+      if (w.__twm_attack_mapping_timer) {
+        clearTimeout(w.__twm_attack_mapping_timer);
+        w.__twm_attack_mapping_timer = null;
+      }
+
+      document.querySelectorAll(".twm_mark, .twm_defense_mark, .twm_attack_mark, .twm_panel, .twm_main_panel").forEach(function (el) {
         el.remove();
       });
 
@@ -1570,7 +2332,7 @@
       const parsed = parseCoords(coordsArea.value);
 
       if (!parsed.length) {
-        setStatus("Nenhuma coordenada válida para adicionar.", true);
+        setGroupStatus("Nenhuma coordenada válida para adicionar.", true);
         return;
       }
 
@@ -1581,7 +2343,7 @@
 
       group.coordInputDraft = "";
       coordsArea.value = "";
-      setStatus(parsed.length + " coordenada(s) adicionada(s) em " + group.name + ".");
+      setGroupStatus(parsed.length + " coordenada(s) adicionada(s) em " + group.name + ".");
       draw();
     };
 
@@ -1617,7 +2379,7 @@
         if (!activeGroupId) {
           clickMode = false;
           updateClickButton();
-          setStatus("Nenhum grupo selecionado.", true);
+          setGroupStatus("Nenhum grupo selecionado.", true);
         }
       }
 
@@ -1691,21 +2453,13 @@
       refreshGroupPanel(group);
     });
 
-    const info = document.getElementById("twm_main_info");
-
-    if (info) {
-      const active = activeGroupId ? groups[activeGroupId] : null;
-
-      info.textContent =
-        "Editando: " +
-        (active ? active.name : "nenhum grupo") +
-        " | Total geral: " +
-        totalAll();
-    }
-
+    updateGroupInfo();
     updateDefenseInfo();
+    updateAttackInfo();
     updateDefenseButtons();
+    updateAttackButtons();
     refreshDefenseGroupSelect();
+    refreshAttackGroupSelect();
   }
 
   w.__twm_click_listener = function (event) {
@@ -1737,7 +2491,7 @@
     if (!active) {
       clickMode = false;
       updateClickButton();
-      setStatus("Crie ou selecione um grupo antes de marcar aldeias.", true);
+      setGroupStatus("Crie ou selecione um grupo antes de marcar aldeias.", true);
       return;
     }
 
