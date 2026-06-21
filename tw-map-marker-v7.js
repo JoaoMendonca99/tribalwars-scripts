@@ -78,6 +78,7 @@
   const ALL_OWN = "__all_own__";
   const ATTACK_ALL_OWN = ALL_OWN;
   const DEBUG_ATTACK_PARSER = true;
+  const DEBUG_VILLAGE_DISCOVERY = true;
 
   const ATTACK_RISK_COLORS = {
     scout: "#00bfff",
@@ -455,95 +456,228 @@
     };
   }
 
-  function pushOwnVillageItem(result, seen, villageId, coord, name) {
-    const id = String(villageId);
+  function dedupeVillageRefs(list) {
+    const seen = {};
+    const out = [];
 
-    if (!id || seen[id]) {
-      return;
+    list.forEach(function (v) {
+      if (!v) {
+        return;
+      }
+
+      if (!v.coord && !v.villageId) {
+        return;
+      }
+
+      const key = v.coord ? "coord:" + v.coord : "id:" + v.villageId;
+
+      if (seen[key]) {
+        return;
+      }
+
+      seen[key] = true;
+      out.push({
+        villageId: v.villageId ? String(v.villageId) : "",
+        coord: v.coord || "",
+        name: v.name || ""
+      });
+    });
+
+    return out;
+  }
+
+  function getOwnVillagesFromGameData() {
+    const source = w.game_data && w.game_data.villages;
+
+    if (!source) {
+      return [];
     }
 
-    seen[id] = 1;
-    result.push({
-      villageId: id,
-      coord: coord || null,
-      name: name || ""
+    const arr = Array.isArray(source) ? source : Object.values(source);
+
+    return arr.map(function (v) {
+      const x = v.x != null ? padCoordPart(v.x) : "";
+      const y = v.y != null ? padCoordPart(v.y) : "";
+
+      return {
+        villageId: String(v.id || v.village_id || ""),
+        coord: v.coord || (x && y ? x + "|" + y : ""),
+        name: v.name || v.display_name || ""
+      };
     });
   }
 
-  async function getAllOwnVillages() {
-    const seen = {};
-    const result = [];
+  function parseOwnVillagesFromOverviewHtml(html) {
+    const doc = typeof DOMParser !== "undefined"
+      ? new DOMParser().parseFromString(String(html || ""), "text/html")
+      : parseHtmlDoc(html);
 
-    const gdVillages = w.game_data && w.game_data.villages;
+    const villages = [];
 
-    if (gdVillages && typeof gdVillages === "object") {
-      if (Array.isArray(gdVillages)) {
-        gdVillages.forEach(function (gdV) {
-          if (!gdV) {
-            return;
-          }
+    Array.from(doc.querySelectorAll("tr")).forEach(function (tr) {
+      const rowText = (tr.innerText || tr.textContent || "").trim();
+      const rowHtml = tr.innerHTML || "";
 
-          pushOwnVillageItem(
-            result,
-            seen,
-            gdV.id || gdV.village_id,
-            coordFromGameVillage(gdV),
-            gdV.name
-          );
-        });
-      } else {
-        Object.keys(gdVillages).forEach(function (key) {
-          const gdV = gdVillages[key];
+      const coordMatch = rowText.match(/\b(\d{3})\|(\d{3})\b/);
 
-          pushOwnVillageItem(
-            result,
-            seen,
-            (gdV && gdV.id) || key,
-            coordFromGameVillage(gdV),
-            gdV && gdV.name
-          );
-        });
+      if (!coordMatch) {
+        return;
       }
+
+      const coord = coordMatch[1] + "|" + coordMatch[2];
+      const links = Array.from(tr.querySelectorAll('a[href*="village="]'));
+
+      let villageId = null;
+      let name = "";
+
+      for (let i = 0; i < links.length; i++) {
+        const a = links[i];
+        const href = a.getAttribute("href") || "";
+        const m = href.match(/[?&]village=(\d+)/);
+
+        if (!m) {
+          continue;
+        }
+
+        villageId = m[1];
+
+        const text = (a.innerText || a.textContent || "").trim();
+
+        if (text && !/^\d+$/.test(text) && text.indexOf("|") === -1) {
+          name = text;
+        }
+
+        break;
+      }
+
+      if (!villageId) {
+        const hrefMatch = rowHtml.match(/[?&]village=(\d+)/);
+
+        if (hrefMatch) {
+          villageId = hrefMatch[1];
+        }
+      }
+
+      if (!name) {
+        name = rowText
+          .replace(/\b\d{3}\|\d{3}\b/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 80);
+      }
+
+      villages.push({
+        villageId: villageId ? String(villageId) : "",
+        coord: coord,
+        name: name
+      });
+    });
+
+    return dedupeVillageRefs(villages);
+  }
+
+  async function fetchOverviewVillages(mode) {
+    const currentVillageId = w.game_data && w.game_data.village && w.game_data.village.id;
+
+    if (!currentVillageId) {
+      return [];
     }
 
+    try {
+      const html = await fetchGameUrl(buildOverviewVillagesUrl(mode));
+
+      return parseOwnVillagesFromOverviewHtml(html);
+    } catch (err) {
+      if (DEBUG_VILLAGE_DISCOVERY) {
+        console.log("[VillageDiscovery] overview " + mode + " falhou", err);
+      }
+
+      return [];
+    }
+  }
+
+  async function getAllOwnVillages() {
+    if (DEBUG_VILLAGE_DISCOVERY) {
+      console.log("[VillageDiscovery] game_data count:", getOwnVillagesFromGameData().length);
+    }
+
+    let result = dedupeVillageRefs(getOwnVillagesFromGameData());
+
     if (result.length) {
+      if (DEBUG_VILLAGE_DISCOVERY) {
+        console.log("[VillageDiscovery] final count:", result.length, result.slice(0, 10));
+      }
+
       return result;
     }
 
-    const overviewModes = ["combined", "prod", "production"];
+    result = dedupeVillageRefs(await fetchOverviewVillages("combined"));
 
-    for (let i = 0; i < overviewModes.length; i++) {
-      try {
-        const html = await fetchGameUrl(buildOverviewVillagesUrl(overviewModes[i]));
-        const fromOverview = parseOwnVillagesFromOverview(html);
-
-        fromOverview.forEach(function (item) {
-          pushOwnVillageItem(result, seen, item.villageId, item.coord, item.name);
-        });
-
-        if (result.length) {
-          return result;
-        }
-      } catch (err) {
-        if (DEBUG_ATTACK_PARSER) {
-          console.log("[OwnVillages] overview " + overviewModes[i] + " falhou", err);
-        }
-      }
+    if (DEBUG_VILLAGE_DISCOVERY) {
+      console.log("[VillageDiscovery] overview combined count:", result.length, result.slice(0, 10));
     }
 
-    parseOwnVillagesFromDomDropdown().forEach(function (item) {
-      pushOwnVillageItem(result, seen, item.villageId, item.coord, item.name);
-    });
+    if (result.length) {
+      if (DEBUG_VILLAGE_DISCOVERY) {
+        console.log("[VillageDiscovery] final count:", result.length, result.slice(0, 10));
+      }
+
+      return result;
+    }
+
+    result = dedupeVillageRefs(await fetchOverviewVillages("prod"));
+
+    if (DEBUG_VILLAGE_DISCOVERY) {
+      console.log("[VillageDiscovery] overview prod count:", result.length, result.slice(0, 10));
+    }
+
+    if (result.length) {
+      if (DEBUG_VILLAGE_DISCOVERY) {
+        console.log("[VillageDiscovery] final count:", result.length, result.slice(0, 10));
+      }
+
+      return result;
+    }
+
+    result = dedupeVillageRefs(await fetchOverviewVillages("units"));
+
+    if (DEBUG_VILLAGE_DISCOVERY) {
+      console.log("[VillageDiscovery] overview units count:", result.length, result.slice(0, 10));
+    }
+
+    if (result.length) {
+      if (DEBUG_VILLAGE_DISCOVERY) {
+        console.log("[VillageDiscovery] final count:", result.length, result.slice(0, 10));
+      }
+
+      return result;
+    }
+
+    if (w.game_data && w.game_data.village) {
+      const v = w.game_data.village;
+
+      result = [{
+        villageId: String(v.id || ""),
+        coord: v.x != null && v.y != null ? padCoordPart(v.x) + "|" + padCoordPart(v.y) : "",
+        name: v.name || ""
+      }];
+    } else {
+      result = [];
+    }
+
+    if (DEBUG_VILLAGE_DISCOVERY) {
+      console.log("[VillageDiscovery] final count:", result.length, result.slice(0, 10));
+    }
 
     return result;
   }
 
   async function getAllOwnVillagesForDefenseMapping() {
-    return getAllOwnVillages();
+    return await getAllOwnVillages();
   }
 
   async function getAllOwnVillagesForAttackMapping() {
-    return getAllOwnVillagesForDefenseMapping();
+    return await getAllOwnVillages();
   }
 
   function buildOverviewVillagesUrl(mode) {
@@ -553,65 +687,6 @@
       (sourceId ? "/game.php?village=" + sourceId + "&screen=" : "/game.php?screen=");
 
     return base + "overview_villages" + (mode ? "&mode=" + mode : "");
-  }
-
-  function parseOwnVillagesFromOverview(html) {
-    const doc = document.createElement("div");
-
-    doc.innerHTML = html;
-
-    const items = [];
-    const seen = {};
-
-    doc.querySelectorAll("a[href*='village='], a[href*='info_village']").forEach(function (link) {
-      const id = extractVillageIdFromHref(link.getAttribute("href"));
-
-      if (!id || !isOwnVillageId(id) || seen[id]) {
-        return;
-      }
-
-      seen[id] = 1;
-
-      const row = link.closest("tr");
-      const rowText = row ? (row.innerText || row.textContent || "") : (link.textContent || "");
-      const coordMatch = rowText.match(/(\d{3})\s*\|\s*(\d{3})/);
-
-      items.push({
-        villageId: id,
-        coord: coordMatch ? coordMatch[1] + "|" + coordMatch[2] : null,
-        name: (link.textContent || "").trim()
-      });
-    });
-
-    return items;
-  }
-
-  function parseOwnVillagesFromDomDropdown() {
-    const items = [];
-    const seen = {};
-
-    document.querySelectorAll(
-      "#village_select option, #village_list option, select[name='village'] option, .village-selector option"
-    ).forEach(function (opt) {
-      const id = String(opt.value || "").trim();
-
-      if (!id || !/^\d+$/.test(id) || !isOwnVillageId(id) || seen[id]) {
-        return;
-      }
-
-      seen[id] = 1;
-
-      const text = opt.textContent || "";
-      const coordMatch = text.match(/(\d{3})\s*\|\s*(\d{3})/);
-
-      items.push({
-        villageId: id,
-        coord: coordMatch ? coordMatch[1] + "|" + coordMatch[2] : null,
-        name: text.trim()
-      });
-    });
-
-    return items;
   }
 
   function findVillageIdByCoord(coord) {
@@ -2404,7 +2479,7 @@
     const ownVillages = await getAllOwnVillagesForAttackMapping();
 
     if (!ownVillages.length) {
-      setAttackStatus("Nenhuma aldeia própria encontrada para mapear ataques.", true);
+      setAttackStatus("Não foi possível carregar a lista de aldeias próprias.", true);
       return;
     }
 
@@ -2838,7 +2913,7 @@
     const ownVillages = await getAllOwnVillagesForDefenseMapping();
 
     if (!ownVillages.length) {
-      setDefenseStatus("Nenhuma aldeia própria encontrada para mapear defesa.", true);
+      setDefenseStatus("Não foi possível carregar a lista de aldeias próprias.", true);
       return;
     }
 
