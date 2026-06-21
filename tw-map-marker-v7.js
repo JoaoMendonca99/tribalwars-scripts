@@ -49,6 +49,11 @@
     w.__twm_defense_capture_timer = null;
   }
 
+  if (w.__twm_defense_mapping_timer) {
+    clearTimeout(w.__twm_defense_mapping_timer);
+    w.__twm_defense_mapping_timer = null;
+  }
+
   let clickMode = false;
   let activeGroupId = null;
   let groupIndex = 0;
@@ -59,7 +64,8 @@
   const DEFENSE_FETCH_DELAY = 280;
 
   let defenseResults = {};
-  let defenseMapping = false;
+  let defenseMappingCancelled = false;
+  let defenseMappingInProgress = false;
 
   let captureDefenseMode = false;
   let captureDefenseLastVillageId = null;
@@ -646,26 +652,132 @@
     return (n % 1 === 0 ? String(n.toFixed(0)) : String(n));
   }
 
+  function findGroupByCoord(coord) {
+    for (const group of Object.values(groups)) {
+      if (group.coords && group.coords[coord]) {
+        return group;
+      }
+    }
+
+    return null;
+  }
+
+  function formatDefenseText(result) {
+    if (!result) {
+      return "";
+    }
+
+    const ownValue = result.ownFull != null ? Number(result.ownFull) : 0;
+    const outsideValue = result.supportFull != null ? Number(result.supportFull) : 0;
+    const totalValue = ownValue + outsideValue;
+
+    const p = result.ownFull != null ? ownValue.toFixed(1) : "-";
+    const f = result.supportFull != null ? outsideValue.toFixed(1) : "-";
+    const t = result.ownFull != null || result.supportFull != null ? totalValue.toFixed(1) : "-";
+
+    return "P:" + p + "\nF:" + f + "\nT:" + t;
+  }
+
+  function formatDefenseTitle(result) {
+    if (!result) {
+      return "";
+    }
+
+    const ownValue = result.ownFull != null ? Number(result.ownFull) : 0;
+    const outsideValue = result.supportFull != null ? Number(result.supportFull) : 0;
+    const totalValue = ownValue + outsideValue;
+
+    const p = result.ownFull != null ? ownValue.toFixed(1) : "-";
+    const f = result.supportFull != null ? outsideValue.toFixed(1) : "-";
+    const t = result.ownFull != null || result.supportFull != null ? totalValue.toFixed(1) : "-";
+
+    return "P: " + p + " | F: " + f + " | T: " + t;
+  }
+
+  function populateDefenseContent(container, result) {
+    container.innerHTML = "";
+
+    const span = document.createElement("span");
+
+    span.className = "twm_mark_defense";
+    span.textContent = formatDefenseText(result);
+    span.style.cssText =
+      "font-size:8px;" +
+      "line-height:8px;" +
+      "white-space:pre-line;" +
+      "font-weight:bold;" +
+      "color:#fff;" +
+      "text-shadow:1px 1px 2px #000,-1px -1px 2px #000;" +
+      "text-align:center;" +
+      "max-width:100%;" +
+      "overflow:hidden;";
+
+    container.appendChild(span);
+  }
+
+  function applyDefenseResult(coord, result) {
+    if (!result || result.ownFull == null || result.supportFull == null) {
+      return;
+    }
+
+    defenseResults[coord] = result;
+    draw();
+  }
+
+  function countDefenseResults() {
+    return Object.keys(defenseResults).length;
+  }
+
+  function clearAllDefense() {
+    defenseResults = {};
+    draw();
+    setStatus("Defesa limpa.");
+  }
+
+  function updateDefenseButtons() {
+    const cancelBtn = document.getElementById("twm_cancel_defense");
+    const mapBtn = document.getElementById("twm_map_defense");
+
+    if (cancelBtn) {
+      cancelBtn.disabled = !defenseMappingInProgress;
+    }
+
+    if (mapBtn) {
+      mapBtn.disabled = defenseMappingInProgress;
+    }
+  }
+
+  function cancelDefenseMapping() {
+    defenseMappingCancelled = true;
+    defenseMappingInProgress = false;
+    w.__twm_defense_cancel = null;
+
+    if (w.__twm_defense_mapping_timer) {
+      clearTimeout(w.__twm_defense_mapping_timer);
+      w.__twm_defense_mapping_timer = null;
+    }
+
+    updateDefenseButtons();
+    updateDefenseInfo();
+    setStatus("Mapeamento de defesa cancelado.");
+  }
+
   function clearDefenseOverlays() {
     document.querySelectorAll(".twm_defense_mark").forEach(function (mark) {
       mark.remove();
     });
   }
 
-  function drawDefenseOverlay(coord, result) {
+  function drawStandaloneDefenseOverlay(coord, result) {
     const village = w.TWMap.villages[keyOf(coord)];
 
     if (!village || !village.id || result.ownFull == null || result.supportFull == null) {
       return;
     }
 
-    defenseResults[coord] = result;
-
-    document.querySelectorAll(".twm_defense_mark").forEach(function (mark) {
-      if (mark.dataset.coord === coord) {
-        mark.remove();
-      }
-    });
+    if (findGroupByCoord(coord)) {
+      return;
+    }
 
     const img = document.getElementById("map_village_" + village.id);
 
@@ -683,7 +795,7 @@
 
     box.className = "twm_defense_mark";
     box.dataset.coord = coord;
-    box.title = "Defesa " + coord + " | P: " + formatDefenseNumber(result.ownFull) + " | T: " + formatDefenseNumber(result.supportFull);
+    box.title = "Defesa " + coord + " | " + formatDefenseTitle(result);
 
     const left = img.style.left || img.offsetLeft + "px";
     const top = img.style.top || img.offsetTop + "px";
@@ -712,26 +824,18 @@
       "align-items:center;" +
       "justify-content:center;" +
       "overflow:hidden;" +
-      "color:#fff;" +
-      "font-weight:bold;" +
-      "font-size:9px;" +
-      "line-height:1.1;" +
-      "text-align:center;" +
-      "text-shadow:1px 1px 2px #000,-1px -1px 2px #000;" +
       "padding:1px;";
 
-    box.innerHTML =
-      "P: " + formatDefenseNumber(result.ownFull) +
-      "<br>T: " + formatDefenseNumber(result.supportFull);
+    populateDefenseContent(box, result);
 
     parent.appendChild(box);
   }
 
-  function drawAllDefenseOverlays() {
-    clearDefenseOverlays();
-
+  function drawStandaloneDefenseOverlays() {
     Object.keys(defenseResults).forEach(function (coord) {
-      drawDefenseOverlay(coord, defenseResults[coord]);
+      if (!findGroupByCoord(coord)) {
+        drawStandaloneDefenseOverlay(coord, defenseResults[coord]);
+      }
     });
   }
 
@@ -742,7 +846,7 @@
   }
 
   function mapVisibleDefense() {
-    if (defenseMapping) {
+    if (defenseMappingInProgress) {
       setStatus("Mapeamento de defesa já em andamento.", true);
       return;
     }
@@ -756,27 +860,26 @@
       return;
     }
 
-    defenseMapping = true;
-    let cancelled = false;
+    defenseMappingCancelled = false;
+    defenseMappingInProgress = true;
+    updateDefenseButtons();
 
-    w.__twm_defense_cancel = function () {
-      cancelled = true;
-      defenseMapping = false;
-    };
+    w.__twm_defense_cancel = cancelDefenseMapping;
 
     setStatus("Mapeando defesa de " + visible.length + " aldeia(s)...");
 
     (function process(index, stats) {
-      if (cancelled) {
-        defenseMapping = false;
-        setStatus("Mapeamento de defesa cancelado.");
+      if (defenseMappingCancelled) {
         return;
       }
 
       if (index >= visible.length) {
-        defenseMapping = false;
+        defenseMappingInProgress = false;
+        defenseMappingCancelled = false;
         w.__twm_defense_cancel = null;
-        drawAllDefenseOverlays();
+        w.__twm_defense_mapping_timer = null;
+        updateDefenseButtons();
+        updateDefenseInfo();
         setStatus(stats.mapped + " aldeia(s) mapeada(s) com defesa.");
         return;
       }
@@ -786,7 +889,7 @@
       setStatus("Mapeando defesa " + (index + 1) + "/" + visible.length + ": " + item.coord + "...");
 
       getVillageDefenseData(item.village).then(function (raw) {
-        if (cancelled) {
+        if (defenseMappingCancelled) {
           return;
         }
 
@@ -796,15 +899,29 @@
           if (result.ownFull != null && result.supportFull != null) {
             defenseResults[item.coord] = result;
             stats.mapped += 1;
-            drawDefenseOverlay(item.coord, result);
+            draw();
           }
+        }
+
+        if (defenseMappingCancelled) {
+          return;
         }
 
         return delay(DEFENSE_FETCH_DELAY);
       }).catch(function () {
+        if (defenseMappingCancelled) {
+          return;
+        }
+
         return delay(DEFENSE_FETCH_DELAY);
       }).then(function () {
-        process(index + 1, stats);
+        if (defenseMappingCancelled) {
+          return;
+        }
+
+        w.__twm_defense_mapping_timer = setTimeout(function () {
+          process(index + 1, stats);
+        }, 0);
       });
     })(0, { mapped: 0 });
   }
@@ -945,11 +1062,9 @@
         return;
       }
 
-      drawDefenseOverlay(coord, result);
+      applyDefenseResult(coord, result);
       setStatus(
-        "Defesa capturada em " + coord + ": P " +
-        formatDefenseNumber(result.ownFull) + " | T " +
-        formatDefenseNumber(result.supportFull)
+        "Defesa capturada em " + coord + ": " + formatDefenseTitle(result)
       );
     }
 
@@ -1130,12 +1245,21 @@
       "justify-content:center;" +
       "overflow:hidden;";
 
-    populateMarkContent(box, group);
+    const defense = defenseResults[coord];
+
+    if (defense) {
+      populateDefenseContent(box, defense);
+      box.title = group.name + " - " + coord + " | " + formatDefenseTitle(defense);
+    } else {
+      populateMarkContent(box, group);
+    }
+
     parent.appendChild(box);
   }
 
   function draw() {
     clearMarks();
+    clearDefenseOverlays();
 
     Object.values(groups).forEach(function (group) {
       Object.keys(group.coords || {}).forEach(function (coord) {
@@ -1153,9 +1277,10 @@
       });
     });
 
+    drawStandaloneDefenseOverlays();
+
     movePanelsToHost();
     refreshAllPanels();
-    drawAllDefenseOverlays();
   }
 
   function totalAll() {
@@ -1328,14 +1453,26 @@
         '<button id="twm_close_all" style="float:right">X</button>' +
       "</div>" +
       '<div style="padding:7px">' +
-        '<button id="twm_new_group">Novo grupo</button> ' +
-        '<button id="twm_click_mode">Modo clique: OFF</button> ' +
-        '<button id="twm_capture_defense">Capturar defesa: OFF</button> ' +
-        '<button id="twm_clear_all">Limpar tudo</button>' +
-        "<br>" +
-        '<button id="twm_map_defense" style="margin-top:4px">Mapear defesa</button> ' +
-        '<button id="twm_clear_defense" style="margin-top:4px">Limpar defesa</button>' +
-        '<div id="twm_main_info" style="margin-top:6px;font-size:11px"></div>' +
+        '<div class="twm_section" style="margin-bottom:8px;">' +
+          '<div class="twm_section_title" style="font-weight:bold;margin-bottom:4px;border-bottom:1px solid #7d510f;padding-bottom:2px;">Grupos</div>' +
+          '<button id="twm_new_group">Novo grupo</button> ' +
+          '<button id="twm_click_mode">Modo clique: OFF</button> ' +
+          '<button id="twm_clear_groups">Limpar grupos</button>' +
+        "</div>" +
+        '<div class="twm_section" style="margin-bottom:8px;">' +
+          '<div class="twm_section_title" style="font-weight:bold;margin-bottom:4px;border-bottom:1px solid #7d510f;padding-bottom:2px;">Defesa</div>' +
+          '<button id="twm_map_defense">Mapear defesa</button> ' +
+          '<button id="twm_cancel_defense" disabled>Cancelar defesa</button> ' +
+          '<button id="twm_capture_defense">Capturar defesa: OFF</button> ' +
+          '<button id="twm_clear_defense">Limpar defesa</button>' +
+          '<div id="twm_defense_legend" style="margin-top:5px;font-size:11px;line-height:14px;color:#333;">' +
+            "<div><b>P</b> = Full defesa próprio na aldeia</div>" +
+            "<div><b>F</b> = Full defesa de fora / apoio</div>" +
+            "<div><b>T</b> = Total de full def na aldeia</div>" +
+          "</div>" +
+        "</div>" +
+        '<div id="twm_main_info" style="margin-top:4px;font-size:11px"></div>' +
+        '<div id="twm_defense_info" style="font-size:11px;margin-top:2px"></div>' +
         '<div id="twm_status" style="margin-top:4px;color:#7a0000;font-size:11px;"></div>' +
       "</div>";
 
@@ -1381,8 +1518,8 @@
       }
     };
 
-    document.getElementById("twm_clear_all").onclick = function () {
-      if (!confirm("Apagar todas as marcações de todos os grupos?")) {
+    document.getElementById("twm_clear_groups").onclick = function () {
+      if (!confirm("Apagar todas as marcações de grupos?")) {
         return;
       }
 
@@ -1391,6 +1528,11 @@
       });
 
       draw();
+      setStatus("Marcações de grupos removidas.");
+    };
+
+    document.getElementById("twm_cancel_defense").onclick = function () {
+      cancelDefenseMapping();
     };
 
     document.getElementById("twm_capture_defense").onclick = function () {
@@ -1421,15 +1563,7 @@
     };
 
     document.getElementById("twm_clear_defense").onclick = function () {
-      if (w.__twm_defense_cancel) {
-        w.__twm_defense_cancel();
-        w.__twm_defense_cancel = null;
-      }
-
-      defenseMapping = false;
-      defenseResults = {};
-      clearDefenseOverlays();
-      setStatus("Overlays de defesa removidos.");
+      clearAllDefense();
     };
 
     document.getElementById("twm_close_all").onclick = function () {
@@ -1461,8 +1595,14 @@
         w.__twm_defense_mouseout_listener = null;
       }
 
-      defenseMapping = false;
+      defenseMappingInProgress = false;
+      defenseMappingCancelled = false;
       defenseResults = {};
+
+      if (w.__twm_defense_mapping_timer) {
+        clearTimeout(w.__twm_defense_mapping_timer);
+        w.__twm_defense_mapping_timer = null;
+      }
 
       document.querySelectorAll(".twm_mark, .twm_defense_mark, .twm_panel, .twm_main_panel").forEach(function (el) {
         el.remove();
@@ -1743,6 +1883,16 @@
     panel.style.borderColor = isActive ? group.color : "#7d510f";
   }
 
+  function updateDefenseInfo() {
+    const info = document.getElementById("twm_defense_info");
+
+    if (!info) {
+      return;
+    }
+
+    info.textContent = "Defesa: " + countDefenseResults() + " aldeia(s) mapeada(s)";
+  }
+
   function refreshAllPanels() {
     Object.values(groups).forEach(function (group) {
       refreshGroupPanel(group);
@@ -1759,6 +1909,9 @@
         " | Total geral: " +
         totalAll();
     }
+
+    updateDefenseInfo();
+    updateDefenseButtons();
   }
 
   w.__twm_click_listener = function (event) {
