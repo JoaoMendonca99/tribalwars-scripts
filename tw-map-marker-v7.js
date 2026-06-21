@@ -581,16 +581,91 @@
       : parseHtmlDoc(html);
     const tables = Array.from(doc.querySelectorAll("table"));
     const aldeiaResultHeader = /Aldeia\s*\(\s*\d+(?:\s+resultados?)?\s*\)/i;
+
+    function getNodeText(node) {
+      return String((node && (node.textContent || node.innerText)) || "").replace(/\s+/g, " ").trim();
+    }
+
+    const candidates = [];
     let resultTable = null;
 
     for (let t = 0; t < tables.length; t++) {
       const table = tables[t];
-      const text = (table.innerText || "").replace(/\s+/g, " ").trim();
+      const text = getNodeText(table);
+      const expectedMatch = text.match(/Aldeia\s*\(\s*(\d+)(?:\s+resultados?)?\s*\)/i);
 
-      if (aldeiaResultHeader.test(text) && /\bPontos\b/i.test(text)) {
-        resultTable = table;
-        break;
+      if (!expectedMatch) {
+        continue;
       }
+
+      const expectedCount = Number(expectedMatch[1]);
+      const coords = text.match(/\b\d{3}\|\d{3}\b/g) || [];
+
+      if (!coords.length) {
+        continue;
+      }
+
+      const bad = /Visualizações|Opções do jogo|CDATA|QuickEdit|CombinadoProduçãoTransporte|Relatórios|Mensagens|Configurações/i.test(text);
+      const uniqueCoords = Array.from(new Set(coords));
+      let score = 0;
+
+      if (uniqueCoords.length >= expectedCount) {
+        score += 100;
+      }
+
+      score += Math.max(0, 10000 - text.length) / 100;
+
+      if (/\bPontos\b/i.test(text)) {
+        score += 10;
+      }
+
+      if (/\bGrupos\b/i.test(text)) {
+        score += 10;
+      }
+
+      if (bad) {
+        score -= 1000;
+      }
+
+      candidates.push({
+        table: table,
+        index: t,
+        text: text,
+        expectedCount: expectedCount,
+        coords: coords,
+        uniqueCoords: uniqueCoords,
+        bad: bad,
+        score: score
+      });
+    }
+
+    console.log("[NativeGroupParser] candidatos", candidates.map(function (c) {
+      return {
+        index: c.index,
+        expectedCount: c.expectedCount,
+        coordCount: c.coords.length,
+        uniqueCoordCount: c.uniqueCoords.length,
+        bad: c.bad,
+        score: c.score,
+        text: c.text.slice(0, 300)
+      };
+    }));
+
+    candidates.sort(function (a, b) {
+      return b.score - a.score;
+    });
+
+    const best = candidates[0];
+
+    if (best && best.score > 0) {
+      resultTable = best.table;
+
+      console.log("[NativeGroupParser] tabela escolhida", {
+        index: best.index,
+        expectedCount: best.expectedCount,
+        coords: best.uniqueCoords,
+        text: best.text.slice(0, 500)
+      });
     }
 
     if (!resultTable) {
@@ -598,19 +673,13 @@
       return [];
     }
 
-    const tableText = (resultTable.innerText || "").replace(/\s+/g, " ").trim();
+    const tableText = getNodeText(resultTable);
     const expectedMatch = tableText.match(/Aldeia\s*\(\s*(\d+)(?:\s+resultados?)?\s*\)/i);
     const expectedCount = expectedMatch ? Number(expectedMatch[1]) : null;
-
-    console.log("[NativeGroupParser] tabela encontrada", {
-      tableText: tableText.slice(0, 500),
-      expectedCount: expectedCount
-    });
-
     const villages = [];
 
     Array.from(resultTable.querySelectorAll("tr")).forEach(function (tr) {
-      const rowText = (tr.innerText || "").replace(/\s+/g, " ").trim();
+      const rowText = getNodeText(tr);
       const rowHtml = tr.innerHTML || "";
 
       if (!rowText) {
@@ -635,7 +704,7 @@
       for (let i = 0; i < links.length; i++) {
         const a = links[i];
         const href = a.getAttribute("href") || "";
-        const linkText = (a.innerText || a.textContent || "").replace(/\s+/g, " ").trim();
+        const linkText = getNodeText(a);
         const m = href.match(/[?&]village=(\d+)/);
 
         if (m && !villageId) {
@@ -669,6 +738,39 @@
         name: name
       });
     });
+
+    if (!villages.length) {
+      const fallbackCoords = Array.from(new Set(tableText.match(/\b\d{3}\|\d{3}\b/g) || []));
+      const tableLinks = Array.from(resultTable.querySelectorAll('a[href*="village="]'));
+
+      fallbackCoords.forEach(function (coord) {
+        let villageId = "";
+        let name = "";
+
+        for (let i = 0; i < tableLinks.length; i++) {
+          const a = tableLinks[i];
+          const linkText = getNodeText(a);
+          const href = a.getAttribute("href") || "";
+
+          if (linkText.indexOf(coord) !== -1) {
+            const m = href.match(/[?&]village=(\d+)/);
+
+            if (m) {
+              villageId = m[1];
+            }
+
+            name = linkText;
+            break;
+          }
+        }
+
+        villages.push({
+          villageId: villageId ? String(villageId) : "",
+          coord: coord,
+          name: name || coord
+        });
+      });
+    }
 
     const deduped = dedupeVillageRefs(villages);
 
